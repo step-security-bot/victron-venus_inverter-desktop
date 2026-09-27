@@ -136,6 +136,34 @@ async fn configured_status(service: &PackageApplication, epoch: u64) -> Value {
 }
 
 #[tokio::test]
+async fn video_window_preference_is_isolated_and_survives_store_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let key = settings_test_key();
+    let (service, _, _) = configured_application(&root, vec![], key.clone()).await;
+    assert!(!service.video_window_always_on_top(PLUGIN).unwrap());
+    let mut data = SettingsData::default();
+    data.values.insert(
+        super::super::settings::VIDEO_ALWAYS_ON_TOP.into(),
+        json!(true),
+    );
+    service
+        .settings_store()
+        .unwrap()
+        .prepare_write(PLUGIN, &data)
+        .unwrap()
+        .commit()
+        .unwrap();
+    assert!(service.video_window_always_on_top(PLUGIN).unwrap());
+    assert!(!service.video_window_always_on_top("other.camera").unwrap());
+    service.close().await.unwrap();
+    let (service, _, _) = configured_application(&root, vec![], key).await;
+    assert!(service.video_window_always_on_top(PLUGIN).unwrap());
+    assert!(!service.video_window_always_on_top("other.camera").unwrap());
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn configured_reinstall_downloads_unsigned_package_once_and_reopens_offline() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();

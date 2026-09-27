@@ -648,7 +648,15 @@ pub(crate) fn native_media_smoke_session(app: &tauri::AppHandle) -> bool {
 pub(crate) async fn install_native_media_smoke(
     app: &tauri::AppHandle,
     root: std::path::PathBuf,
+    plugin_id: &str,
+    always_on_top: bool,
 ) -> Result<MediaService, String> {
+    // The isolated fixture uses its own disposable key, never installation data.
+    use rand::RngExt;
+    let key: [u8; 32] = rand::rng().random();
+    let key_provider: super::settings_store::SettingsKeyProvider =
+        Arc::new(move || Ok(key.to_vec()));
+    let settings = super::settings_store::SettingsStore::new(root.clone(), key_provider.clone());
     let host = PluginHost::default();
     let (media, events) = MediaService::new();
     let packages = PackageApplication::new_with_media(
@@ -675,7 +683,7 @@ pub(crate) async fn install_native_media_smoke(
             .initialize_with_key(
                 Ok(root),
                 super::package::TrustStore::new(Vec::new()),
-                Arc::new(|| Err("Native media smoke never accesses settings keys".into())),
+                key_provider,
             )
             .await;
     })
@@ -687,6 +695,14 @@ pub(crate) async fn install_native_media_smoke(
     let snapshot = packages.snapshot(epoch).await?;
     if !snapshot.ready || snapshot.error.is_some() {
         return Err("Native media smoke package initialization failed".into());
+    }
+    if always_on_top {
+        let mut data = super::settings_store::SettingsData::default();
+        data.values.insert(
+            super::settings::VIDEO_ALWAYS_ON_TOP.into(),
+            Value::Bool(true),
+        );
+        settings.prepare_write(plugin_id, &data)?.commit()?;
     }
     Ok(media)
 }
@@ -755,6 +771,17 @@ pub(crate) fn media_access(app: &tauri::AppHandle) -> Option<MediaService> {
         return None;
     }
     Some(state.media.clone())
+}
+
+/// Native-only preference lookup; the plugin identity comes from its media lease.
+pub(crate) fn video_window_always_on_top(
+    app: &tauri::AppHandle,
+    plugin_id: &str,
+) -> Result<bool, String> {
+    app.try_state::<DesktopPlugins>()
+        .ok_or("Plugin store is unavailable")?
+        .packages
+        .video_window_always_on_top(plugin_id)
 }
 
 fn forward_http_videos(app: &tauri::AppHandle) {

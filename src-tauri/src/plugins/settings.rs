@@ -428,6 +428,47 @@ pub(crate) struct PluginSettingsView {
 
 pub(crate) struct SettingsSchema {
     fields: Vec<SettingField>,
+    video_windows: bool,
+}
+
+// Package schemas cannot declare keys beginning with '_'. This host preference
+// shares the encrypted settings transaction but never enters worker configuration.
+pub(crate) const VIDEO_ALWAYS_ON_TOP: &str = "_host_video_always_on_top";
+
+pub(crate) fn video_always_on_top(data: &SettingsData) -> Result<bool, String> {
+    if data.secret_fields.contains(VIDEO_ALWAYS_ON_TOP)
+        || data.secrets.contains_key(VIDEO_ALWAYS_ON_TOP)
+    {
+        return Err("Invalid video window preference classification".into());
+    }
+    match data.values.get(VIDEO_ALWAYS_ON_TOP) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err("Invalid video window preference".into()),
+    }
+}
+
+fn video_window_field() -> SettingField {
+    SettingField {
+        key: VIDEO_ALWAYS_ON_TOP.into(),
+        title: "Always on top".into(),
+        description: Some("Keep this plugin's video windows above other windows.".into()),
+        kind: SettingType::Boolean,
+        required: false,
+        secret: false,
+        choices: None,
+        minimum: None,
+        maximum: None,
+        min_length: None,
+        max_length: None,
+        editor: None,
+        options_source: None,
+        options_prefixes: Vec::new(),
+        options_multiple: false,
+        default: Some(Value::Bool(false)),
+        omit_empty: false,
+        omit_default: false,
+    }
 }
 
 fn bounded_text(text: &Option<String>, maximum: usize) -> bool {
@@ -556,7 +597,15 @@ impl SettingsSchema {
             }
             fields.push(field);
         }
-        Ok(Self { fields })
+        Ok(Self {
+            fields,
+            video_windows: manifest.permissions.iter().any(|permission| {
+                matches!(
+                    permission,
+                    PluginPermission::HttpVideo | PluginPermission::LiveView
+                )
+            }),
+        })
     }
 
     fn check_classification(&self, data: &SettingsData) -> Result<(), String> {
@@ -591,12 +640,21 @@ impl SettingsSchema {
         data: &SettingsData,
     ) -> Result<PluginSettingsView, String> {
         self.check_classification(data)?;
+        let mut fields = self.fields.clone();
+        let mut values = self.public_values(data);
+        if self.video_windows {
+            fields.push(video_window_field());
+            values.insert(
+                VIDEO_ALWAYS_ON_TOP.into(),
+                Value::Bool(video_always_on_top(data)?),
+            );
+        }
         Ok(PluginSettingsView {
             plugin_id: manifest.plugin_id.clone(),
             version: manifest.version.clone(),
             revision: format!("{digest}:{}", data.revision),
-            fields: self.fields.clone(),
-            values: self.public_values(data),
+            fields,
+            values,
             secret_present: self
                 .fields
                 .iter()
@@ -611,12 +669,19 @@ impl SettingsSchema {
         digest: &str,
         current: &SettingsData,
         revision: &str,
-        values: BTreeMap<String, Value>,
+        mut values: BTreeMap<String, Value>,
         changes: BTreeMap<String, Option<String>>,
     ) -> Result<SettingsData, String> {
         self.check_classification(current)?;
         if revision != format!("{digest}:{}", current.revision) {
             return Err("Plugin or settings changed; reopen settings before saving".into());
+        }
+        let video_preference = values.remove(VIDEO_ALWAYS_ON_TOP);
+        if video_preference
+            .as_ref()
+            .is_some_and(|value| !self.video_windows || !value.is_boolean())
+        {
+            return Err("Invalid video window preference".into());
         }
         if values.len() > MAX_FIELDS
             || changes.len() > MAX_FIELDS
@@ -636,6 +701,10 @@ impl SettingsSchema {
             return Err("Unknown or incorrectly classified plugin setting".into());
         }
         let mut next = current.clone();
+        // An older editor omits host preferences; keep the saved choice intact.
+        if let Some(value) = video_preference {
+            next.values.insert(VIDEO_ALWAYS_ON_TOP.into(), value);
+        }
         for field in &self.fields {
             // Preserve fields absent from this schema for rollback and future migration.
             next.values.remove(&field.key);
@@ -676,6 +745,7 @@ impl SettingsSchema {
 
     fn validate_fields(&self, data: &SettingsData, require_complete: bool) -> Result<(), String> {
         self.check_classification(data)?;
+        video_always_on_top(data)?;
         for field in &self.fields {
             let secret;
             let value = if field.secret {

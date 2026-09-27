@@ -222,6 +222,8 @@ fn open_window(app: &tauri::AppHandle, media: &MediaService, ready: ReadyMedia) 
         return Err(());
     }
     let live = ready.live_url.is_some();
+    let always_on_top =
+        super::bridge::video_window_always_on_top(app, &ready.plugin_id).map_err(|_| ())?;
     if media_id_for_label(&ready.window_label).as_deref() != Some(ready.media_id.as_str())
         || live != is_plugin_preview_label(&ready.window_label)
     {
@@ -266,6 +268,7 @@ fn open_window(app: &tauri::AppHandle, media: &MediaService, ready: ReadyMedia) 
     .visible(false)
     .decorations(false)
     .focused(false)
+    .always_on_top(always_on_top)
     .incognito(live)
     .on_navigation(move |url| navigation_allowed(url, development_url.as_ref()))
     .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)

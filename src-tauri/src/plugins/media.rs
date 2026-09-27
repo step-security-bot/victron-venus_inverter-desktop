@@ -68,6 +68,7 @@ impl std::fmt::Display for MediaError {
 
 /// Native adapter input. Preview URLs are disclosed only to their owning local viewer.
 pub(crate) struct ReadyMedia {
+    pub plugin_id: String,
     pub live_url: Option<reqwest::Url>,
     pub media_id: String,
     pub window_label: String,
@@ -544,6 +545,7 @@ impl MediaService {
         // The registry now owns the file. Dropping this extra reference does no I/O.
         drop(file);
         let ready = MediaEvent::Ready(ReadyMedia {
+            plugin_id: lease.plugin_id().to_owned(),
             live_url: None,
             media_id: id.clone(),
             window_label: label.clone(),
@@ -586,6 +588,7 @@ impl MediaService {
                 .clone()
         };
         let ready = MediaEvent::Ready(ReadyMedia {
+            plugin_id: lease.plugin_id().to_owned(),
             live_url: Some(url),
             media_id: id.clone(),
             window_label: label.clone(),

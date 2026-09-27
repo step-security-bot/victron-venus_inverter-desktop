@@ -133,6 +133,13 @@ download the removed package again. Settings are retained by default. Manual
 archive replacement and rollback remain unavailable while an exact declaration
 owns the version. Settings remain editable.
 
+Video-capable plugins offer **Always on top** in their settings, off by default.
+Enable it separately for each plugin to keep its clips, snapshots, live previews,
+and opened live-view pages above other windows. Save settings to apply the choice
+to the plugin's next windows. Automatic previews still open without taking focus.
+The host stores this preference with encrypted plugin settings; existing plugin
+packages need no update and never receive it in their worker configuration.
+
 If a declaration has no installed package, its configured row offers **Remove
 from configuration** with a confirmation. This removes only the saved declaration
 and stops future automatic restoration; retained settings, secrets, and stored

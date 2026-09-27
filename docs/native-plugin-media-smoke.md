@@ -10,7 +10,7 @@ The harness creates temporary application state and uses a nonpersistent browser
 profile. It does not initialize normal authentication, saved configuration,
 keychain access, core MQTT, camera workers, or installed plugins. It initializes
 an empty temporary package manager for the real bridge lifecycle. Its publisher
-policy is empty and its settings key provider cannot supply a key. No production
+policy is empty; encrypted fixture preferences use a fresh disposable key. No production
 publisher key, package installation, or new application-signing step is required.
 
 ## Run explicitly
@@ -58,6 +58,13 @@ cargo run --locked --manifest-path src-tauri/Cargo.toml \
 The explicit feature embeds the desktop assets, so rebuild them after player
 changes. A stale desktop build is not evidence for changed frontend source.
 Stop the fixture server after the test.
+
+Add `--always-on-top true` to test enabled video window pinning. With the option
+omitted or set to `false`, the preference remains absent from the isolated store
+and must default off. Both clip and live-preview modes check the actual native
+window level before and after reveal, alongside the existing focus checks.
+The independent live-preview peer belongs to another plugin and must remain
+unpinned even when the primary plugin's preference is enabled.
 
 ## What a pass establishes
 

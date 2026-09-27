@@ -17,10 +17,12 @@ use tauri::Manager;
 use tokio::time::{sleep, timeout};
 
 const PLUGIN: &str = "native.media-smoke";
+const PEER_TITLE: &str = "Smoke independent peer";
 const STAGES: [&str; 3] = ["Smoke close", "Smoke revoke", "Smoke ended"];
 const WAIT: Duration = Duration::from_secs(45);
 
 struct Options {
+    always_on_top: bool,
     live: bool,
     url: String,
     output: PathBuf,
@@ -39,9 +41,15 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut minimum_loading = Duration::ZERO;
     let mut expected_live_outcome = "ready".to_owned();
     let mut diagnose_hidden = false;
+    let mut always_on_top = false;
     while let Some(argument) = args.next() {
         let value = args.next().ok_or("Every option requires a value")?;
         match argument.as_str() {
+            "--always-on-top" => {
+                always_on_top = value
+                    .parse()
+                    .map_err(|_| "Invalid always-on-top preference")?
+            }
             "--fixture-url" if url.is_none() => url = Some(value),
             "--live-fixture-url" if url.is_none() => {
                 url = Some(value);
@@ -73,6 +81,7 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
         }
     }
     let result = Options {
+        always_on_top,
         live,
         url: url
             .ok_or("--fixture-url or --live-fixture-url is required (explicit loopback media)")?,
@@ -177,6 +186,7 @@ struct Evidence {
 }
 
 struct SmokeState {
+    always_on_top: bool,
     evidence: Mutex<Evidence>,
     file: Mutex<File>,
     leases: Mutex<Vec<GenerationLease>>,
@@ -303,6 +313,23 @@ async fn reveal_plugin_video_window(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, Arc<SmokeState>>,
 ) -> Result<(), String> {
+    // The independent peer belongs to another plugin whose preference is absent.
+    // It must remain unpinned even while the primary plugin's windows are pinned.
+    let expected_on_top = state.always_on_top
+        && window
+            .title()
+            .map_err(|_| "Cannot inspect fixture identity")?
+            != PEER_TITLE;
+    let always_on_top = window
+        .is_always_on_top()
+        .map_err(|_| "Cannot inspect video window level")?;
+    state.check(
+        &format!("always_on_top:{}", window.label()),
+        json!({"expected":expected_on_top,"actual":always_on_top}),
+    );
+    if always_on_top != expected_on_top {
+        return Err("Native video window ignored its saved always-on-top preference".into());
+    }
     state.check(
         &format!("reveal_command_entered:{}", window.label()),
         json!(true),
@@ -361,11 +388,20 @@ async fn reveal_plugin_video_window(
         .await
         .map_err(|_| "Native reveal task failed".to_owned())??;
     let anchor_after = anchor.is_focused().unwrap_or(false);
-    let preview_focused = app
+    let revealed = app
         .get_webview_window(&label)
-        .ok_or("Revealed preview disappeared")?
-        .is_focused()
-        .unwrap_or(true);
+        .ok_or("Revealed preview disappeared")?;
+    let preview_focused = revealed.is_focused().unwrap_or(true);
+    let revealed_on_top = revealed
+        .is_always_on_top()
+        .map_err(|_| "Cannot inspect revealed window level")?;
+    state.check(
+        &format!("always_on_top_after_reveal:{label}"),
+        json!(revealed_on_top),
+    );
+    if revealed_on_top != expected_on_top {
+        return Err("Native reveal changed the video window level".into());
+    }
     state.check(&format!("focus_at_reveal:{label}"), json!({
         "anchor_before":anchor_before,"anchor_after":anchor_after,"preview_focused":preview_focused,
     }));
@@ -896,14 +932,12 @@ async fn exercise_live(
                     grant: fixture_live_grant(&options.url)?,
                     id: "native-live-peer".into(),
                     url: options.url.clone(),
-                    title: "Smoke independent peer".into(),
+                    title: PEER_TITLE.into(),
                 })
                 .map_err(|_| "Cannot admit native camera peer")?;
             let peer = until(|| {
                 Ok(app.webview_windows().into_values().find(|candidate| {
-                    candidate
-                        .title()
-                        .is_ok_and(|title| title == "Smoke independent peer")
+                    candidate.title().is_ok_and(|title| title == PEER_TITLE)
                         && candidate.is_visible().unwrap_or(false)
                 }))
             })
@@ -963,7 +997,13 @@ async fn exercise(
     profile: PathBuf,
     options: Options,
 ) -> Result<(), String> {
-    let media = super::bridge::install_native_media_smoke(&app, profile.join("plugins")).await?;
+    let media = super::bridge::install_native_media_smoke(
+        &app,
+        profile.join("plugins"),
+        PLUGIN,
+        options.always_on_top,
+    )
+    .await?;
     state.check("isolated_ready", json!(true));
     state.check("anchor_focused", json!(false));
     state.persist()?;
@@ -1127,6 +1167,7 @@ pub fn run() -> Result<(), String> {
         println!("Live mode: --live-fixture-url 'http://127.0.0.1:PORT/prefix/api/front?fps=2&height=360' --evidence /absolute/new.json. Serve MJPEG with alternating distinct frames for native decoding and 15-second expiry proof.");
         println!("Live readiness proof: [--minimum-loading-ms 0..12000] [--expected-live-outcome ready|still|error|timeout|revoke-loading]. Every window must remain hidden during an isolated 750 ms AuthGate bootstrap and until its decoded media or expected terminal error.");
         println!("Diagnostic only: --diagnose-hidden true evaluates the hidden DOM at 3s/11s and may wake a throttled webview; do not use this option as hidden-readiness acceptance.");
+        println!("Window preference: [--always-on-top true|false] seeds isolated encrypted plugin settings and verifies the native window level before and after reveal (default false).");
         return Ok(());
     }
     let options = options(arguments)?;
@@ -1145,6 +1186,7 @@ pub fn run() -> Result<(), String> {
         .tempdir()
         .map_err(|_| "Cannot create private smoke profile")?;
     let state = Arc::new(SmokeState {
+        always_on_top: options.always_on_top,
         evidence: Mutex::new(Evidence { scope:"Native fixture lease; actual media service, route, Vue player and OS windows. Signed worker/MQTT are proved separately.",
             passed:false,failure:None,checks:BTreeMap::new(),observations:Vec::new() }),
         file: Mutex::new(output), leases:Mutex::new(Vec::new()),

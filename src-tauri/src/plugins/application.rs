@@ -304,6 +304,10 @@ impl PackageApplication {
         }
     }
 
+    pub(crate) fn video_window_always_on_top(&self, id: &str) -> Result<bool, String> {
+        super::settings::video_always_on_top(&self.settings_store()?.read(id)?)
+    }
+
     /// Called under the package operation lock with the verified manifest.
     /// The seed is committed once, before any worker receives its configuration.
     fn load_settings(

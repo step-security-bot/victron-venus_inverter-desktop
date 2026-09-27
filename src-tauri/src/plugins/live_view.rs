@@ -22,6 +22,12 @@ fn label(request: &LiveViewRequest) -> String {
 
 #[cfg(target_os = "macos")]
 fn open(app: tauri::AppHandle, request: LiveViewRequest, title: String) {
+    let Ok(always_on_top) =
+        super::bridge::video_window_always_on_top(&app, request.lease.plugin_id())
+    else {
+        log::warn!("Cannot read plugin video window preference");
+        return;
+    };
     let owned = request.clone();
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -45,6 +51,7 @@ fn open(app: tauri::AppHandle, request: LiveViewRequest, title: String) {
         .min_inner_size(320.0, 180.0)
         .resizable(true)
         .focused(true)
+        .always_on_top(always_on_top)
         .on_navigation(|url| matches!(url.scheme(), "http" | "https"))
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .build();

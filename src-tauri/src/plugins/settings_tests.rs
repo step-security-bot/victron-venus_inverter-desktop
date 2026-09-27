@@ -44,6 +44,115 @@ fn saved(schema: &SettingsSchema) -> SettingsData {
 }
 
 #[test]
+fn video_window_preference_defaults_off_and_stays_out_of_worker_configuration() {
+    for permission in [PluginPermission::HttpVideo, PluginPermission::LiveView] {
+        let mut metadata = configured_manifest();
+        metadata.permissions.push(permission);
+        let schema = SettingsSchema::compile(&metadata).unwrap();
+        let initial = saved(&schema);
+        let view =
+            serde_json::to_value(schema.view(&metadata, "archive", &initial).unwrap()).unwrap();
+        assert_eq!(view["values"][VIDEO_ALWAYS_ON_TOP], false);
+        assert!(view["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| { field["key"] == VIDEO_ALWAYS_ON_TOP && field["type"] == "boolean" }));
+        let enabled = schema
+            .merge(
+                "archive",
+                &initial,
+                &format!("archive:{}", initial.revision),
+                BTreeMap::from([(VIDEO_ALWAYS_ON_TOP.into(), json!(true))]),
+                BTreeMap::new(),
+            )
+            .unwrap();
+        assert!(video_always_on_top(&enabled).unwrap());
+        assert_ne!(enabled.revision, initial.revision);
+        assert_eq!(enabled.secrets, initial.secrets);
+        assert_eq!(
+            schema.configuration(&enabled).unwrap().values,
+            schema.configuration(&initial).unwrap().values
+        );
+        let restored: SettingsData =
+            serde_json::from_value(serde_json::to_value(&enabled).unwrap()).unwrap();
+        assert!(video_always_on_top(&restored).unwrap());
+        let legacy_save = schema
+            .merge(
+                "archive",
+                &restored,
+                &format!("archive:{}", restored.revision),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+            .unwrap();
+        assert!(video_always_on_top(&legacy_save).unwrap());
+        assert_eq!(legacy_save.revision, restored.revision);
+        assert!(schema
+            .merge(
+                "archive",
+                &enabled,
+                &format!("archive:{}", initial.revision),
+                BTreeMap::from([(VIDEO_ALWAYS_ON_TOP.into(), json!(false))]),
+                BTreeMap::new(),
+            )
+            .is_err());
+        let disabled = schema
+            .merge(
+                "archive",
+                &enabled,
+                &format!("archive:{}", enabled.revision),
+                BTreeMap::from([(VIDEO_ALWAYS_ON_TOP.into(), json!(false))]),
+                BTreeMap::new(),
+            )
+            .unwrap();
+        assert!(!video_always_on_top(&disabled).unwrap());
+    }
+}
+
+#[test]
+fn video_window_preference_rejects_invalid_types_classification_and_non_video_plugins() {
+    let metadata = configured_manifest();
+    let schema = SettingsSchema::compile(&metadata).unwrap();
+    let initial = saved(&schema);
+    let view = serde_json::to_value(schema.view(&metadata, "archive", &initial).unwrap()).unwrap();
+    assert!(view["values"].get(VIDEO_ALWAYS_ON_TOP).is_none());
+    assert!(schema
+        .merge(
+            "archive",
+            &initial,
+            &format!("archive:{}", initial.revision),
+            BTreeMap::from([(VIDEO_ALWAYS_ON_TOP.into(), json!(true))]),
+            BTreeMap::new(),
+        )
+        .is_err());
+    let mut metadata = metadata;
+    metadata.permissions.push(PluginPermission::HttpVideo);
+    let schema = SettingsSchema::compile(&metadata).unwrap();
+    for invalid in [json!("true"), json!(1), Value::Null, json!({})] {
+        assert!(schema
+            .merge(
+                "archive",
+                &initial,
+                &format!("archive:{}", initial.revision),
+                BTreeMap::from([(VIDEO_ALWAYS_ON_TOP.into(), invalid.clone())]),
+                BTreeMap::new(),
+            )
+            .is_err());
+        let mut corrupted = initial.clone();
+        corrupted.values.insert(VIDEO_ALWAYS_ON_TOP.into(), invalid);
+        assert!(schema.view(&metadata, "archive", &corrupted).is_err());
+        assert!(schema.seed_configuration(&corrupted).is_err());
+    }
+    let mut secret = initial;
+    secret.secret_fields.insert(VIDEO_ALWAYS_ON_TOP.into());
+    assert!(video_always_on_top(&secret).is_err());
+    assert!(schema.view(&metadata, "archive", &secret).is_err());
+    metadata.config_schema["properties"][VIDEO_ALWAYS_ON_TOP] = json!({"type":"boolean"});
+    assert!(SettingsSchema::compile(&metadata).is_err());
+}
+
+#[test]
 fn missing_settings_show_defaults_without_revealing_secrets_or_requiring_setup() {
     let metadata = configured_manifest();
     let schema = SettingsSchema::compile(&metadata).unwrap();

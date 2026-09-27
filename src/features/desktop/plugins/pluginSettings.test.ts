@@ -110,6 +110,33 @@ afterEach(() => {
   controllers.length = 0
 })
 
+it('saves the host video window preference as a boolean without changing secrets', async () => {
+  const key = '_host_video_always_on_top'
+  view.fields.push(field(key, { type: 'boolean', title: 'Always on top' }))
+  view.values[key] = false
+  const editor = await open()
+  const checkbox = editor.get(`input[name="${key}"]`)
+  expect((checkbox.element as HTMLInputElement).checked).toBe(false)
+  await checkbox.setValue(true)
+  await editor.get('form').trigger('submit')
+  await flushPromises()
+  expect(saves()[0][1]).toMatchObject({
+    pluginId: view.plugin_id,
+    revision: 'revision-1',
+    values: { [key]: true },
+    secretChanges: {},
+  })
+  expect((editor.get(`input[name="${key}"]`).element as HTMLInputElement).checked).toBe(true)
+  await editor.get(`input[name="${key}"]`).setValue(false)
+  await editor.get('form').trigger('submit')
+  await flushPromises()
+  expect(saves()[1][1]).toMatchObject({
+    revision: 'revision-2',
+    values: { [key]: false },
+    secretChanges: {},
+  })
+})
+
 describe('desktop plugin settings', () => {
   it('renders labeled native descriptors as text and never fills saved secret inputs', async () => {
     view.fields[0].title = '<img src=x onerror=alert(1)>'
