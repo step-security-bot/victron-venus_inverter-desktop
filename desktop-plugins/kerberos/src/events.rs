@@ -16,6 +16,7 @@ pub struct Events {
     live_cameras: BTreeSet<String>,
     mqtt_urls: inverter_camera_common::live_urls::CameraLiveUrls,
     mqtt_seen: HashMap<String, Instant>,
+    excluded_legacy_cameras: BTreeSet<String>,
 }
 
 struct Motion {
@@ -28,6 +29,7 @@ impl Events {
         Ok(Self {
             seen: HashMap::new(),
             mqtt_seen: HashMap::new(),
+            excluded_legacy_cameras: config.excluded_legacy_cameras()?,
             mqtt_urls: config.mqtt_live_urls()?,
             labels: labels(config.values.camera_labels.as_deref(), valid_identity)?,
             live_cameras: config.live_urls()?.into_keys().collect(),
@@ -118,6 +120,11 @@ impl Events {
             }
             _ => return None,
         };
+        // Only legacy Agent/Hub motion is excluded. MQTT URL previews have
+        // their own admission path and cooldown, even for the same camera ID.
+        if self.excluded_legacy_cameras.contains(&camera) {
+            return None;
+        }
         self.seen
             .retain(|_, seen| now.saturating_duration_since(*seen) < SILENCE);
         if let Some(last) = self.seen.get_mut(&camera) {
@@ -207,6 +214,47 @@ mod tests {
     }
     fn hub(camera: &str, timestamp: u64) -> Vec<u8> {
         serde_json::to_vec(&json!({"device_id":camera,"hidden":false,"encrypted":false,"payload":{"action":"motion","device_id":camera,"value":{"timestamp":timestamp}}})).unwrap()
+    }
+
+    #[test]
+    fn legacy_exclusion_uses_device_identity_and_never_filters_mqtt_urls() {
+        let endpoint = "https://ha.invalid/api/camera_proxy_stream/camera.front";
+        for with_legacy_preview in [false, true] {
+            let config: Configuration = serde_json::from_value(json!({
+                "revision":"fixture", "values":{"mqtt_host":"localhost",
+                    "excluded_legacy_cameras":r#"["front"]"#,
+                    "mqtt_live_endpoints":json!({"front":endpoint}).to_string()},
+                "secrets":if with_legacy_preview {
+                    json!({"camera_live_urls":r#"{"front":"https://legacy.invalid/live"}"#})
+                } else { json!({}) }
+            }))
+            .unwrap();
+            let mut events = Events::new(&config).unwrap();
+            let now = Instant::now();
+            assert!(events
+                .frames("kerberos/agent/front", b"motion", false, now, 1000)
+                .is_empty());
+            // A shared Hub topic identifies the camera in its payload.
+            assert!(events
+                .frames("kerberos/hub/shared", &hub("front", 1000), false, now, 1000)
+                .is_empty());
+            assert!(events.seen.is_empty());
+            let preview = events.frames(
+                "homelab/cameras/live/front",
+                format!("{endpoint}?token=fixture").as_bytes(),
+                false,
+                now,
+                1000,
+            );
+            assert_eq!(preview.len(), 1);
+            assert_eq!(preview[0]["type"], "mqtt_live");
+            for camera in ["back", "Front", "front-east"] {
+                let frames =
+                    events.frames("kerberos/hub/shared", &hub(camera, 1000), false, now, 1000);
+                assert_eq!(frames.len(), 1);
+                assert_eq!(frames[0]["type"], "notification");
+            }
+        }
     }
 
     #[test]

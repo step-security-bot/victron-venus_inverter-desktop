@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plugin_id": "inverter-desktop.frigate",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "host_api": "^1.8",
   "target": "TARGET",
   "entrypoint": "bin/inverter-frigate-worker",
@@ -24,6 +24,26 @@
     "additionalProperties": false,
     "required": ["mqtt_host"],
     "properties": {
+      "excluded_cameras": {
+        "type": "string",
+        "title": "Excluded cameras",
+        "description": "Exact camera IDs whose motion notifications, live previews and completed clips are ignored by this plugin. Recording and detection on the Frigate server are unchanged. Leave empty to include every camera.",
+        "maxLength": 8192,
+        "default": "[]",
+        "x-editor": {
+          "kind": "json",
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "title": "Camera ID",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "maxItems": 32
+          }
+        }
+      },
       "mqtt_host": {
         "type": "string",
         "title": "MQTT broker host",

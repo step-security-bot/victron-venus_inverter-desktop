@@ -1,4 +1,6 @@
 mod config;
+#[path = "../../camera-common/src/exclusions.rs"]
+mod exclusions;
 mod frigate;
 mod media;
 mod network;

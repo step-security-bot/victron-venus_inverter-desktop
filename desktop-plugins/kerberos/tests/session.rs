@@ -310,6 +310,9 @@ fn mqtt_live_uses_exact_subscriptions_no_retained_replay_and_cooldown_survives_r
     let mut config = configuration(listener.local_addr().unwrap().port());
     config["configuration"]["values"]["mqtt_live_endpoints"] =
         json!(json!({"front":endpoint,"back":back}).to_string());
+    config["configuration"]["values"]["excluded_legacy_cameras"] = json!(r#"["front"]"#);
+    config["configuration"]["secrets"]["camera_live_urls"] =
+        json!(r#"{"front":"https://legacy.invalid/live"}"#);
     worker.configure_frame(config);
     let topics = [
         TOPICS[0],
@@ -320,6 +323,18 @@ fn mqtt_live_uses_exact_subscriptions_no_retained_replay_and_cooldown_survives_r
     let mut stream = subscribe(&listener, PROVIDER, &topics);
     worker.status("Connected");
     let fresh = format!("{endpoint}?token=private_fixture");
+    publish(&mut stream, "kerberos/agent/front", b"motion", false);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let legacy = json!({"device_id":"front","payload":{"action":"motion","device_id":"front","value":{"timestamp":now}}});
+    publish(
+        &mut stream,
+        "kerberos/hub/shared",
+        legacy.to_string().as_bytes(),
+        false,
+    );
     publish(
         &mut stream,
         "homelab/cameras/live/front",
@@ -357,6 +372,7 @@ fn mqtt_live_uses_exact_subscriptions_no_retained_replay_and_cooldown_survives_r
     worker.status("Connecting");
     let mut stream = subscribe(&listener, PROVIDER, &topics);
     worker.status("Connected");
+    publish(&mut stream, "kerberos/agent/front", b"motion", false);
     publish(
         &mut stream,
         "homelab/cameras/live/front",
@@ -376,6 +392,8 @@ fn mqtt_live_uses_exact_subscriptions_no_retained_replay_and_cooldown_survives_r
         .frames
         .recv_timeout(Duration::from_millis(150))
         .is_err());
+    publish(&mut stream, "kerberos/agent/other", b"motion", false);
+    assert_eq!(worker.frame()["type"], "notification");
     worker.shutdown();
     let mut stderr = String::new();
     worker

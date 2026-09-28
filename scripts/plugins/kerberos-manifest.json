@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plugin_id": "inverter-desktop.kerberos",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "host_api": "^1.9",
   "target": "TARGET",
   "entrypoint": "bin/inverter-kerberos-worker",
@@ -17,6 +17,26 @@
     "additionalProperties": false,
     "required": ["mqtt_host"],
     "properties": {
+      "excluded_legacy_cameras": {
+        "type": "string",
+        "title": "Excluded legacy cameras",
+        "description": "Exact Agent or Hub device IDs whose legacy motion notifications and live previews are ignored. MQTT live camera endpoints remain active, even for the same ID. Leave empty to include every legacy camera.",
+        "maxLength": 8192,
+        "default": "[]",
+        "x-editor": {
+          "kind": "json",
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "title": "Legacy camera ID",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "maxItems": 32
+          }
+        }
+      },
       "mqtt_host": {
         "type": "string",
         "title": "MQTT broker host",

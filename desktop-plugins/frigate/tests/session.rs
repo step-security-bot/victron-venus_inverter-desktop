@@ -274,6 +274,57 @@ fn live_start_requests_one_scoped_host_preview_and_end_never_opens_a_clip() {
 }
 
 #[test]
+fn excluded_cameras_never_emit_live_notification_or_legacy_clip_frames() {
+    for (api, with_base, expected) in [
+        ("1.8.0", true, "http_live"),
+        ("1.8.0", false, "notification"),
+    ] {
+        let broker = listener();
+        let mut worker = Worker::start();
+        worker.hello_with_api(api);
+        let mut config = configuration(broker.local_addr().unwrap().port());
+        config["configuration"]["values"]["excluded_cameras"] = json!(r#"["front"]"#);
+        if with_base {
+            config["configuration"]["values"]["frigate_base_url"] =
+                json!("https://frigate.invalid");
+        }
+        worker.configure_frame(config);
+        let mut stream = subscribe(&broker);
+        worker.status("Connected");
+        for i in 0..40 {
+            let id = format!("excluded-{i}");
+            publish(&mut stream, &id, "front", false);
+            publish_event(&mut stream, completed(&id, "front"), false);
+        }
+        // Excluded bursts must not consume notification or deduplication budgets.
+        publish(&mut stream, "excluded-0", "back", false);
+        let admitted = worker.frame();
+        assert_eq!(admitted["type"], expected);
+        assert_eq!(admitted["title"], "Frigate Back camera motion detected");
+        assert!(worker
+            .frames
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(stream);
+        worker.status("Disconnected");
+        worker.status("Connecting");
+        let mut stream = subscribe(&broker);
+        worker.status("Connected");
+        publish(&mut stream, "after-reconnect", "front", false);
+        publish(&mut stream, "included-after-reconnect", "side", false);
+        assert_eq!(
+            worker.frame()["title"],
+            "Frigate Side camera motion detected"
+        );
+        assert!(worker
+            .frames
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        worker.shutdown();
+    }
+}
+
+#[test]
 fn missing_base_keeps_the_session_motion_only() {
     for (api, base) in [("1.8.0", None), ("1.8.0", Some(""))] {
         let broker = listener();

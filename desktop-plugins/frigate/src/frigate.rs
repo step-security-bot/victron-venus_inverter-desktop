@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -44,6 +44,12 @@ pub struct ClipEvents {
 }
 
 impl ClipEvents {
+    pub fn excluding(cameras: BTreeSet<String>) -> Self {
+        Self {
+            history: MotionEvents::excluding(cameras),
+        }
+    }
+
     pub fn parse(
         &mut self,
         payload: &[u8],
@@ -76,11 +82,19 @@ impl ClipEvents {
 
 #[derive(Default)]
 pub struct MotionEvents {
+    excluded_cameras: BTreeSet<String>,
     ids: HashMap<String, Instant>,
     cameras: HashMap<String, Instant>,
 }
 
 impl MotionEvents {
+    pub fn excluding(cameras: BTreeSet<String>) -> Self {
+        Self {
+            excluded_cameras: cameras,
+            ..Self::default()
+        }
+    }
+
     pub fn parse(
         &mut self,
         payload: &[u8],
@@ -112,7 +126,8 @@ impl MotionEvents {
     }
 
     fn admit(&mut self, after: &EventDetails, now: Instant) -> Option<String> {
-        if after.id.is_empty()
+        if self.excluded_cameras.contains(&after.camera)
+            || after.id.is_empty()
             || after.id.len() > 128
             || after.camera.trim().is_empty()
             || after.camera.len() > 128
@@ -164,6 +179,33 @@ mod tests {
             "id":id,"camera":camera,"has_clip":true,"start_time":1.0
         }}))
         .unwrap()
+    }
+
+    #[test]
+    fn excluded_camera_suppresses_motion_and_clips_without_consuming_history() {
+        let excluded = BTreeSet::from(["front".into()]);
+        let mut motions = MotionEvents::excluding(excluded.clone());
+        let mut clips = ClipEvents::excluding(excluded);
+        let now = Instant::now();
+        let base = crate::media::base_url(Some("https://frigate.invalid"))
+            .unwrap()
+            .unwrap();
+        assert!(motions
+            .parse(&event("shared", "front"), false, now, 1000.0)
+            .is_none());
+        assert!(clips
+            .parse(&completed("shared", "front"), false, now, Some(&base))
+            .is_none());
+        // Neither IDs nor camera cooldowns are spent by excluded deliveries.
+        for camera in ["back", "Front", "front-east"] {
+            let id = if camera == "back" { "shared" } else { camera };
+            assert!(motions
+                .parse(&event(id, camera), false, now, 1000.0)
+                .is_some());
+            assert!(clips
+                .parse(&completed(id, camera), false, now, Some(&base))
+                .is_some());
+        }
     }
 
     #[test]

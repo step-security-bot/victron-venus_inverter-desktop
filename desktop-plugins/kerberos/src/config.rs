@@ -27,6 +27,8 @@ pub struct Values {
     pub camera_labels: Option<String>,
     #[serde(default)]
     pub mqtt_live_endpoints: Option<String>,
+    #[serde(default)]
+    pub excluded_legacy_cameras: Option<String>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -59,6 +61,7 @@ impl Configuration {
         }
         self.broker()?;
         self.live_urls()?;
+        self.excluded_legacy_cameras()?;
         inverter_camera_common::labels(
             self.values.camera_labels.as_deref(),
             inverter_camera_common::valid_identity,
@@ -96,6 +99,14 @@ impl Configuration {
             self.values.mqtt_live_endpoints.as_deref(),
         )
     }
+    pub fn excluded_legacy_cameras(
+        &self,
+    ) -> Result<std::collections::BTreeSet<String>, &'static str> {
+        inverter_camera_common::exclusions::parse(
+            self.values.excluded_legacy_cameras.as_deref(),
+            inverter_camera_common::valid_identity,
+        )
+    }
     pub fn live_urls(&self) -> Result<std::collections::BTreeMap<String, String>, &'static str> {
         let mapping =
             inverter_camera_common::mapping(self.secrets.camera_live_urls.as_deref(), 16384)?;
@@ -131,6 +142,7 @@ mod tests {
         assert_eq!(config.values.mqtt_port, 1883);
         assert_eq!(config.broker().unwrap().topics.len(), 2);
         assert!(!config.values.mqtt_tls);
+        assert!(config.excluded_legacy_cameras().unwrap().is_empty());
         let mut value = valid();
         value["values"]["mqtt_password"] = json!("not-public");
         assert!(serde_json::from_value::<Configuration>(value).is_err());
@@ -144,6 +156,10 @@ mod tests {
             ("mqtt_tls", json!("false")),
             ("mqtt_topics", json!("#")),
             ("camera_labels", json!("not-json")),
+            ("excluded_legacy_cameras", json!(r#"["front/invalid"]"#)),
+            ("excluded_legacy_cameras", json!(r#"["+"]"#)),
+            ("excluded_legacy_cameras", json!(r#"[" front"]"#)),
+            ("excluded_legacy_cameras", json!(["front"])),
         ] {
             let mut value = valid();
             value["values"][field] = bad;

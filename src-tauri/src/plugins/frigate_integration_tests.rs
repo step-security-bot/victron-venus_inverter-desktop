@@ -595,6 +595,7 @@ async fn configure_preview(
     broker: &Broker,
     topic: &str,
     base: &str,
+    excluded: &[&str],
 ) {
     let view = serde_json::to_value(service.get_settings(PLUGIN, epoch).await.unwrap()).unwrap();
     let saved = service
@@ -608,6 +609,10 @@ async fn configure_preview(
                 ("mqtt_tls".into(), json!(false)),
                 ("mqtt_topic".into(), json!(topic)),
                 ("frigate_base_url".into(), json!(base)),
+                (
+                    "excluded_cameras".into(),
+                    json!(serde_json::to_string(excluded).unwrap()),
+                ),
             ]),
             BTreeMap::new(),
         )
@@ -664,12 +669,20 @@ async fn signed_frigate_package_real_mqtt_live_lifecycle() {
     let (media, events) = super::media::MediaService::new();
     let mut windows = PreviewWindows::new(media.clone(), events);
     let (service, host, epoch) = installed_application_with_media(&root, Some(media.clone())).await;
-    configure_preview(&service, epoch, &broker, TOPIC, base).await;
+    configure_preview(&service, epoch, &broker, TOPIC, base, &["excluded"]).await;
     service.set_enabled(PLUGIN, true, epoch).await.unwrap();
     wait_connection(&host, "Connected").await;
     telemetry.assert_live(&broker, 0).await;
 
     let mut notices = Vec::new();
+    broker
+        .publish(TOPIC, motion("excluded live", "excluded"))
+        .await;
+    broker
+        .publish(TOPIC, completed_motion("excluded clip", "excluded"))
+        .await;
+    expect_quiet(&host, &mut notices, 0).await;
+    assert!(host.take_http_video_requests().is_empty());
     broker.publish(TOPIC, motion("first live", "front")).await;
     let first_lease = submit_live(&host, &media).await;
     expect_quiet(&host, &mut notices, 0).await;
@@ -693,14 +706,17 @@ async fn signed_frigate_package_real_mqtt_live_lifecycle() {
     );
 
     // Settings replacement revokes the original instance before native absence.
-    configure_preview(&service, epoch, &broker, NEXT_TOPIC, base).await;
+    configure_preview(&service, epoch, &broker, NEXT_TOPIC, base, &[]).await;
     assert!(!first_lease.is_active());
     assert!(!media.is_window_active(&first.media_id, &first.window_label));
     windows.expect_closed(&first.window_label).await;
     expect_media_empty(&media, &root).await;
     wait_connection(&host, "Connected").await;
     telemetry.assert_live(&broker, 1).await;
-    broker.publish(NEXT_TOPIC, motion("second", "back")).await;
+    // Removing the setting restores admission for the previously excluded camera.
+    broker
+        .publish(NEXT_TOPIC, motion("second", "excluded"))
+        .await;
     let second_lease = submit_live(&host, &media).await;
     assert_ne!(first_lease.instance_id(), second_lease.instance_id());
     let second = windows.next_ready().await;

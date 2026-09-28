@@ -1,7 +1,7 @@
 # Frigate worker
 
 `inverter-frigate-worker` is the optional desktop package
-`inverter-desktop.frigate`, version 0.3.0, requiring host API `^1.8`. It opens its
+`inverter-desktop.frigate`, version 0.4.0, requiring host API `^1.8`. It opens its
 own MQTT connection, emits connection status, and requests a 15-second live
 preview when a direct Frigate HTTP address is configured. Motion without a
 preview sends an ordinary notification. It belongs to the generic **Cameras** plugin group, so the dashboard
@@ -12,6 +12,14 @@ code. Kerberos and Ring use separate optional packages. Configured archives use
 exact saved SHA-256 pins; manual signed packages retain publisher policy.
 Application/executable signing or notarization is not required by either path.
 Android and iOS exclude these packages and the desktop plugin runtime.
+
+**Excluded cameras** (`excluded_cameras`) is an optional JSON array of exact,
+case-sensitive Frigate camera IDs. It suppresses motion notifications, live
+previews and legacy completed clips for those cameras in this desktop plugin.
+It does not change recording or detection on the Frigate server. Empty or absent
+settings include every camera. The list supports up to 32 IDs of 128 UTF-8 bytes
+each, within 8 KiB of JSON; wildcards and display-name matching are not applied.
+Excluded messages do not consume event history or notification budgets.
 
 ## Configuration
 

@@ -25,6 +25,8 @@ pub struct Values {
     pub mqtt_topic: String,
     #[serde(default)]
     pub frigate_base_url: Option<String>,
+    #[serde(default)]
+    pub excluded_cameras: Option<String>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -64,6 +66,7 @@ impl Configuration {
         }
         let values = &self.values;
         crate::media::base_url(values.frigate_base_url.as_deref())?;
+        self.excluded_cameras()?;
         let host = &values.mqtt_host;
         let hostname = !host.is_empty()
             && host.len() <= 253
@@ -112,6 +115,10 @@ impl Configuration {
         }
         Ok(())
     }
+
+    pub fn excluded_cameras(&self) -> Result<std::collections::BTreeSet<String>, &'static str> {
+        crate::exclusions::parse(self.values.excluded_cameras.as_deref(), |_| true)
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +136,7 @@ mod tests {
         assert_eq!(config.values.mqtt_topic, "frigate/events");
         assert!(!config.values.mqtt_tls);
         assert!(config.values.frigate_base_url.is_none());
+        assert!(config.excluded_cameras().unwrap().is_empty());
         let mut value = valid();
         value["values"]["mqtt_password"] = json!("not-public");
         assert!(serde_json::from_value::<Configuration>(value).is_err());
@@ -159,6 +167,10 @@ mod tests {
             ),
             ("mqtt_port", vec![json!(0), json!(65536), json!("1883")]),
             ("mqtt_tls", vec![json!("false")]),
+            (
+                "excluded_cameras",
+                vec![json!(["front"]), json!("{}"), json!(r#"[""]"#)],
+            ),
             (
                 "frigate_base_url",
                 vec![json!(7), json!(true), json!("https://user:password@host")],

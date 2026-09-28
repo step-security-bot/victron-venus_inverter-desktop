@@ -119,8 +119,9 @@ pub async fn run(
     } else {
         Transport::Tcp
     };
-    let mut events = MotionEvents::default();
-    let mut clips = ClipEvents::default();
+    let excluded_cameras = config.excluded_cameras()?;
+    let mut events = MotionEvents::excluding(excluded_cameras.clone());
+    let mut clips = ClipEvents::excluding(excluded_cameras);
     let mut notification_budget = NotificationBudget::default();
     let mut backoff = Duration::from_secs(1);
     loop {

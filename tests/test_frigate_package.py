@@ -73,7 +73,7 @@ class FrigatePackageTests(unittest.TestCase):
         metadata = json.loads((self.output / "manifest.json").read_text())
         self.assertEqual(metadata["target"], "aarch64-apple-darwin")
         self.assertEqual(metadata["plugin_id"], "inverter-desktop.frigate")
-        self.assertEqual(metadata["version"], "0.3.0")
+        self.assertEqual(metadata["version"], "0.4.0")
         self.assertEqual(metadata["host_api"], "^1.8")
         self.assertEqual(metadata["http_video"], {
             "base_url_setting": "frigate_base_url",
@@ -93,6 +93,15 @@ class FrigatePackageTests(unittest.TestCase):
         self.assertNotIn("frigate_base_url", metadata["config_schema"]["required"])
         self.assertEqual(fields["frigate_base_url"]["type"], "string")
         self.assertEqual(fields["frigate_base_url"]["maxLength"], 2048)
+        excluded = fields["excluded_cameras"]
+        self.assertEqual(excluded["default"], "[]")
+        self.assertNotIn("writeOnly", excluded)
+        self.assertEqual(excluded["maxLength"], 8192)
+        self.assertEqual(excluded["x-editor"]["schema"], {
+            "type": "array", "maxItems": 32,
+            "items": {"type": "string", "title": "Camera ID",
+                      "minLength": 1, "maxLength": 128},
+        })
 
     def test_windows_entrypoint_uses_executable_suffix(self):
         """The same metadata template supports the Windows binary name."""

@@ -134,7 +134,7 @@ class ReleasePluginPackageTests(unittest.TestCase):
     def test_worker_version_drift_is_rejected_before_publication(self):
         """Metadata must identify the actual independently versioned worker."""
         cargo = self.root / "desktop-plugins/frigate/Cargo.toml"
-        cargo.write_text(cargo.read_text().replace('version = "0.3.0"', 'version = "99.0.0"'))
+        cargo.write_text(cargo.read_text().replace('version = "0.4.0"', 'version = "99.0.0"'))
         with self.assertRaisesRegex(ValueError, "version does not match"):
             self.build()
         self.assertEqual(list((self.root / "release-output/desktop").iterdir()), [])

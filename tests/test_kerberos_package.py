@@ -33,6 +33,15 @@ class KerberosPackageTests(unittest.TestCase):
         self.assertEqual(live["x-editor"]["schema"]["additionalProperties"]["maxLength"], 2048)
         self.assertNotIn("ha_token", fields)
         self.assertNotIn("frigate_base_url", fields)
+        excluded = fields["excluded_legacy_cameras"]
+        self.assertEqual(excluded["default"], "[]")
+        self.assertEqual(excluded["maxLength"], 8192)
+        self.assertNotIn("writeOnly", excluded)
+        self.assertEqual(excluded["x-editor"]["schema"], {
+            "type": "array", "maxItems": 32,
+            "items": {"type": "string", "title": "Legacy camera ID",
+                      "minLength": 1, "maxLength": 128},
+        })
 
 
 if __name__ == "__main__":

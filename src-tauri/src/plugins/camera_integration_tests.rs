@@ -542,17 +542,30 @@ async fn signed_kerberos_package_mqtt_url_preview_lifecycle() {
         KERBEROS,
         epoch,
         broker.port,
+        BTreeMap::from([
+            (
+                "mqtt_live_endpoints".into(),
+                json!(json!({"front":endpoint}).to_string()),
+            ),
+            ("excluded_legacy_cameras".into(), json!(r#"["front"]"#)),
+        ]),
         BTreeMap::from([(
-            "mqtt_live_endpoints".into(),
-            json!(json!({"front":endpoint}).to_string()),
+            "camera_live_urls".into(),
+            r#"{"front":"https://legacy.invalid/live"}"#.into(),
         )]),
-        BTreeMap::new(),
     )
     .await;
     broker.publish_bytes(topic, initial.as_bytes(), true).await;
     service.set_enabled(KERBEROS, true, epoch).await.unwrap();
     connection(&host, KERBEROS, "Connected").await;
     let mut notices = Vec::new();
+    broker
+        .publish_bytes("kerberos/agent/front", b"motion", false)
+        .await;
+    let legacy = json!({"device_id":"front","payload":{"action":"motion","device_id":"front","value":{"timestamp":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()}}});
+    broker
+        .publish_bytes("kerberos/hub/shared", legacy.to_string().as_bytes(), false)
+        .await;
     quiet(&host, KERBEROS, &mut notices, 0).await;
     assert!(host.take_http_video_requests().is_empty());
     broker.publish_bytes(topic, b"", true).await;

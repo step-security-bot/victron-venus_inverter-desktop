@@ -1,4 +1,5 @@
 //! Shared bounded transport and pure validation for independent camera workers.
+pub mod exclusions;
 pub mod live_urls;
 pub mod network;
 

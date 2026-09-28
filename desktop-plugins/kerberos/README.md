@@ -1,10 +1,19 @@
 # Kerberos desktop worker
 
-`inverter-desktop.kerberos` version 0.2.0 requires desktop host API 1.9. It is independently installable and does not require Frigate or Home Assistant. Android and iOS builds reject this package at build time.
+`inverter-desktop.kerberos` version 0.3.0 requires desktop host API 1.9. It is independently installable and does not require Frigate or Home Assistant. Android and iOS builds reject this package at build time.
 
 The worker subscribes to native Agent motion topics. The default filters are `kerberos/agent/+;kerberos/hub/+`; custom filters may replace the final identity with an exact ID. The broker host, port, TLS setting and write-only username/password belong to this plugin. No core MQTT or HA credentials are inherited.
 
 Standalone Agent messages must contain `motion`. Hub messages must contain an unencrypted, non-hidden `payload.action=motion`, an exact device identity, and a positive timestamp within 60 seconds behind or 10 seconds ahead of the current clock. Conflicting outer device IDs, retained messages, oversized payloads and legacy clip URLs are ignored.
+
+**Excluded legacy cameras** (`excluded_legacy_cameras`) is an optional JSON array
+of exact, case-sensitive Agent/Hub camera IDs. It suppresses only their legacy
+motion notifications and live previews. For a shared Hub topic, matching uses
+the payload's validated `device_id`, not the Hub topic suffix or display name.
+The separate MQTT URL preview path remains active even for the same camera ID.
+Empty or absent settings preserve all legacy cameras; other cameras and broker
+subscriptions are unchanged. The list holds up to 32 valid identities of 128
+UTF-8 bytes each, within 8 KiB of JSON.
 
 Agent and Hub messages share a 15-second silence boundary per camera. Repeated movement extends the same episode. A fresh episode receives a distinct notification ID; MQTT reconnects keep the current process's episode history.
 
