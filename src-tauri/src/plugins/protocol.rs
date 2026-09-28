@@ -5,12 +5,17 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use reqwest::Url;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+// Share pure endpoint validation without linking worker transport into the host.
+#[path = "../../../desktop-plugins/camera-common/src/live_urls.rs"]
+pub mod mqtt_live;
+
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const HOST_API_VERSION: &str = "1.8.0";
+pub const HOST_API_VERSION: &str = "1.9.0";
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 /// Includes the newline terminating a frame.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
@@ -91,6 +96,13 @@ pub enum WorkerMessage {
         id: String,
         url: String,
         title: String,
+    },
+    /// Fresh MQTT URL, scoped to a configured camera endpoint by the native host.
+    MqttLive {
+        id: String,
+        title: String,
+        camera_id: String,
+        url: String,
     },
     /// Automatic preview of an exact, privately configured destination.
     LiveView {
@@ -350,6 +362,8 @@ pub struct LivePreviewDeclaration {
 pub struct LiveViewDeclaration {
     pub urls_setting: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mqtt_urls_setting: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_duration_seconds: Option<u16>,
 }
 
@@ -368,6 +382,7 @@ fn is_false(value: &bool) -> bool {
 #[derive(Clone, Default)]
 pub struct LiveViewGrant {
     urls: BTreeMap<String, reqwest::Url>,
+    mqtt_urls: mqtt_live::CameraLiveUrls,
     preview_duration_seconds: Option<u16>,
 }
 
@@ -400,12 +415,25 @@ impl LiveViewGrant {
             return Ok(None);
         };
         let configuration = configuration.ok_or("Live view startup configuration missing")?;
+        let mqtt_urls = mqtt_live::CameraLiveUrls::parse(
+            declaration
+                .mqtt_urls_setting
+                .as_ref()
+                .and_then(|key| configuration.values.get(key))
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or("Invalid MQTT live camera configuration")
+                })
+                .transpose()?,
+        )?;
         let Some(value) = configuration
             .secrets
             .get(&declaration.urls_setting)
             .filter(|value| !value.trim().is_empty())
         else {
             return Ok(Some(Self {
+                mqtt_urls,
                 preview_duration_seconds: declaration.preview_duration_seconds,
                 ..Self::default()
             }));
@@ -447,6 +475,7 @@ impl LiveViewGrant {
         }
         Ok(Some(Self {
             urls,
+            mqtt_urls,
             preview_duration_seconds: declaration.preview_duration_seconds,
         }))
     }
@@ -462,17 +491,34 @@ impl LiveViewGrant {
         let duration = self
             .preview_duration_seconds
             .ok_or("Automatic live view is not authorized")?;
-        Ok(self.resolve(id).map(|url| {
-            let grant = HttpVideoGrant {
-                base: url.clone(),
-                live_preview: None,
-                exact_preview: Some((url.clone(), duration)),
-                bearer_token: None,
-                cooldown_seconds: 15,
-                allow_query: false,
-            };
-            (url, grant)
-        }))
+        Ok(self
+            .resolve(id)
+            .map(|url| Self::exact_preview(url, duration)))
+    }
+
+    pub(crate) fn mqtt_preview(
+        &self,
+        id: &str,
+        value: &str,
+    ) -> Result<(reqwest::Url, HttpVideoGrant), String> {
+        let duration = self
+            .preview_duration_seconds
+            .filter(|seconds| (1..=15).contains(seconds))
+            .ok_or("MQTT live preview is not authorized")?;
+        let url = self.mqtt_urls.resolve(id, value)?;
+        Ok(Self::exact_preview(url, duration))
+    }
+
+    fn exact_preview(url: reqwest::Url, duration: u16) -> (reqwest::Url, HttpVideoGrant) {
+        let grant = HttpVideoGrant {
+            base: url.clone(),
+            live_preview: None,
+            exact_preview: Some((url.clone(), duration)),
+            bearer_token: None,
+            cooldown_seconds: 15,
+            allow_query: false,
+        };
+        (url, grant)
     }
 }
 
@@ -1036,6 +1082,19 @@ pub fn validate_worker_message(message: &WorkerMessage) -> Result<(), String> {
             label(title, "live preview title", 128)?;
             validated_media_url(url, true)?;
         }
+        WorkerMessage::MqttLive {
+            id,
+            title,
+            camera_id,
+            url,
+        } => {
+            token(id, "MQTT live preview id")?;
+            label(title, "MQTT live preview title", 128)?;
+            if !mqtt_live::camera_id(camera_id) {
+                return Err("Invalid MQTT live camera identity".into());
+            }
+            validated_media_url(url, true)?;
+        }
         WorkerMessage::LiveView {
             id,
             title,
@@ -1243,6 +1302,15 @@ impl PluginManifest {
         }
         if let Some(declaration) = &self.live_view {
             self.validate_secret_setting(&declaration.urls_setting)?;
+            if let Some(key) = &declaration.mqtt_urls_setting {
+                self.validate_public_string_setting(key)?;
+                if declaration
+                    .preview_duration_seconds
+                    .is_none_or(|seconds| !(1..=15).contains(&seconds))
+                {
+                    return Err("Invalid MQTT live preview duration".into());
+                }
+            }
             if declaration
                 .preview_duration_seconds
                 .is_some_and(|seconds| !(1..=30).contains(&seconds))
@@ -1305,6 +1373,25 @@ impl PluginManifest {
                     "HTTP video base must name a nonsecret string configuration setting".into(),
                 );
             }
+        }
+        Ok(())
+    }
+
+    fn validate_public_string_setting(&self, key: &str) -> Result<(), String> {
+        token(key, "scoped public setting")?;
+        let field = self
+            .config_schema
+            .get("properties")
+            .and_then(|fields| fields.get(key));
+        if !self
+            .permissions
+            .contains(&PluginPermission::PluginConfiguration)
+            || field.and_then(|f| f.get("type")).and_then(Value::as_str) != Some("string")
+            || field
+                .and_then(|f| f.get("writeOnly"))
+                .is_some_and(|v| v.as_bool() != Some(false))
+        {
+            return Err("Scoped endpoints must name a nonsecret string setting".into());
         }
         Ok(())
     }
@@ -1999,15 +2086,17 @@ mod tests {
     }
 
     #[test]
-    fn host_api_18_accepts_earlier_worker_ranges_and_requires_negotiated_acknowledgement() {
-        assert_eq!(HOST_API_VERSION, "1.8.0");
-        for requirement in ["^1.0", "^1.3", "^1.4", "^1.5", "^1.6", "^1.7", "^1.8"] {
+    fn host_api_19_accepts_earlier_worker_ranges_and_requires_negotiated_acknowledgement() {
+        assert_eq!(HOST_API_VERSION, "1.9.0");
+        for requirement in [
+            "^1.0", "^1.3", "^1.4", "^1.5", "^1.6", "^1.7", "^1.8", "^1.9",
+        ] {
             let mut manifest = manifest();
             manifest.host_api = requirement.into();
             manifest.validate().unwrap();
         }
-        assert!(validate_versions(1, "1.8.0").is_ok());
-        assert!(validate_versions(1, "1.7.0").is_err());
+        assert!(validate_versions(1, "1.9.0").is_ok());
+        assert!(validate_versions(1, "1.8.0").is_err());
         assert!(validate_versions(2, "1.8.0").is_err());
     }
 

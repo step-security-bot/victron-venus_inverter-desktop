@@ -103,7 +103,7 @@ jobs:
           INVERTER_RING_WORKER: ${{ github.workspace }}/desktop-plugins/ring/target/release/inverter-ring-worker
           MOSQUITTO_BIN: /usr/sbin/mosquitto
         run: |
-          for camera_test in signed_kerberos_package_real_mqtt_lifecycle signed_ring_package_real_mqtt_snapshot_lifecycle; do
+          for camera_test in signed_kerberos_package_real_mqtt_lifecycle signed_kerberos_package_mqtt_url_preview_lifecycle signed_ring_package_real_mqtt_snapshot_lifecycle; do
             cargo test --locked --manifest-path src-tauri/Cargo.toml --lib \
               "plugins::camera_integration_tests::$camera_test" \
               -- --exact --ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/$camera_test.log"

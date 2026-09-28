@@ -23,8 +23,8 @@ def validate_camera_staging(test, plugin):
                 if "windows" in target:
                     binary += ".exe"
                 test.assertEqual(manifest["plugin_id"], f"inverter-desktop.{plugin}")
-                test.assertEqual(manifest["version"], "0.1.0")
-                test.assertEqual(manifest["host_api"], "^1.8")
+                test.assertEqual(manifest["version"], "0.2.0" if plugin == "kerberos" else "0.1.0")
+                test.assertEqual(manifest["host_api"], "^1.9" if plugin == "kerberos" else "^1.8")
                 test.assertEqual(manifest["target"], target)
                 test.assertEqual(manifest["entrypoint"], f"bin/{binary}")
                 test.assertEqual(manifest["group"], {

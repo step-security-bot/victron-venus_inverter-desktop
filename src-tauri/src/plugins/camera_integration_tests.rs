@@ -524,3 +524,94 @@ async fn signed_ring_package_real_mqtt_snapshot_lifecycle() {
     timeout(WAIT, server).await.unwrap().unwrap();
     service.close().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit INVERTER_KERBEROS_WORKER and private MOSQUITTO_BIN; CI runs this test"]
+async fn signed_kerberos_package_mqtt_url_preview_lifecycle() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let mut broker = Broker::new(&root).await;
+    let (media, mut events) = MediaService::new();
+    let (service, host, epoch) = installed(&root, "kerberos", Some(media.clone())).await;
+    let endpoint = "https://ha.invalid/api/camera_proxy_stream/camera.front";
+    let topic = "homelab/cameras/live/front";
+    let initial = format!("{endpoint}?token=private_fixture");
+    let rotated = format!("{endpoint}?token=rotated_fixture");
+    configure(
+        &service,
+        KERBEROS,
+        epoch,
+        broker.port,
+        BTreeMap::from([(
+            "mqtt_live_endpoints".into(),
+            json!(json!({"front":endpoint}).to_string()),
+        )]),
+        BTreeMap::new(),
+    )
+    .await;
+    broker.publish_bytes(topic, initial.as_bytes(), true).await;
+    service.set_enabled(KERBEROS, true, epoch).await.unwrap();
+    connection(&host, KERBEROS, "Connected").await;
+    let mut notices = Vec::new();
+    quiet(&host, KERBEROS, &mut notices, 0).await;
+    assert!(host.take_http_video_requests().is_empty());
+    broker.publish_bytes(topic, b"", true).await;
+    broker
+        .publish_bytes(
+            topic,
+            b"https://other.invalid/api/camera_proxy_stream/camera.front?token=private_fixture",
+            false,
+        )
+        .await;
+    quiet(&host, KERBEROS, &mut notices, 0).await;
+    assert!(host.take_http_video_requests().is_empty());
+    broker.publish_bytes(topic, initial.as_bytes(), false).await;
+    let request = media_request(&host).await;
+    assert_eq!(request.url, initial);
+    assert_eq!(
+        request.grant.preview_duration(),
+        Some(Duration::from_secs(15))
+    );
+    media.try_submit(request).unwrap();
+    let first = ready(&media, &mut events).await;
+    assert_eq!(
+        media
+            .live_preview_url(&first.media_id, &first.window_label)
+            .unwrap()
+            .as_str(),
+        initial
+    );
+    assert!(media.live_preview_url(&first.media_id, "main").is_none());
+    broker.stop();
+    connection(&host, KERBEROS, "Disconnected").await;
+    broker.start().await;
+    connection(&host, KERBEROS, "Connected").await;
+    broker.publish_bytes(topic, rotated.as_bytes(), false).await;
+    quiet(&host, KERBEROS, &mut notices, 0).await;
+    assert!(host.take_http_video_requests().is_empty());
+    let public = serde_json::to_string(&host.snapshots()).unwrap();
+    let settings =
+        serde_json::to_string(&service.get_settings(KERBEROS, epoch).await.unwrap()).unwrap();
+    assert!(!public.contains("private_fixture") && !settings.contains("private_fixture"));
+    let MediaEvent::Close { window_label } = timeout(Duration::from_secs(17), events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("preview must expire without another MQTT event");
+    };
+    assert_eq!(window_label, first.window_label);
+    assert!(!media.is_window_active(&first.media_id, &first.window_label));
+    media.window_destroyed(&window_label);
+    broker.publish_bytes(topic, rotated.as_bytes(), false).await;
+    let request = media_request(&host).await;
+    assert_eq!(request.url, rotated, "fresh event uses its new token");
+    let lease = request.lease.clone();
+    media.try_submit(request).unwrap();
+    let next = ready(&media, &mut events).await;
+    service.set_enabled(KERBEROS, false, epoch).await.unwrap();
+    assert!(!lease.is_active());
+    closed(&media, &mut events, &next).await;
+    quiet(&host, KERBEROS, &mut notices, 0).await;
+    service.close().await.unwrap();
+}

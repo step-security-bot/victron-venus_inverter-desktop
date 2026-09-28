@@ -166,6 +166,18 @@ fn main() {
                     emit(&ack);
                 }
                 contribute();
+                if mode.starts_with("configuration_mqtt_live") {
+                    for (id, camera, token) in [
+                        ("mqtt-1", "front", "private_fixture"),
+                        ("mqtt-2", "rear", "private_fixture"),
+                        ("mqtt-3", "front", "rotated_fixture"),
+                    ] {
+                        let path_camera = if mode.ends_with("bad_url") { "other" } else { camera };
+                        emit(&format!(
+                            r#"{{"type":"mqtt_live","id":"{id}","title":"Camera","camera_id":"{camera}","url":"https://ha.invalid/api/camera_proxy_stream/camera.{path_camera}?token={token}"}}"#
+                        ));
+                    }
+                }
                 if mode.starts_with("configuration_mapped_live") {
                     for (id, camera) in [
                         ("mapped-1", "front"),

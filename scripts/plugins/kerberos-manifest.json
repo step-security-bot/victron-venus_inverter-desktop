@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plugin_id": "inverter-desktop.kerberos",
-  "version": "0.1.0",
-  "host_api": "^1.8",
+  "version": "0.2.0",
+  "host_api": "^1.9",
   "target": "TARGET",
   "entrypoint": "bin/inverter-kerberos-worker",
   "permissions": [
@@ -95,6 +95,25 @@
             "maxProperties": 32
           }
         }
+      },
+      "mqtt_live_endpoints": {
+        "type": "string",
+        "title": "MQTT live camera endpoints",
+        "description": "Optional token-free HTTPS Home Assistant camera endpoints keyed by MQTT camera ID. Subscribe to homelab/cameras/live/<ID> and preview fresh URL events for 15 seconds. Leave empty to disable.",
+        "maxLength": 16384,
+        "x-editor": {
+          "kind": "json",
+          "schema": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "title": "HTTPS camera endpoint (without token)",
+              "minLength": 1,
+              "maxLength": 1536
+            },
+            "maxProperties": 32
+          }
+        }
       }
     }
   },
@@ -107,6 +126,7 @@
   },
   "live_view": {
     "urls_setting": "camera_live_urls",
-    "preview_duration_seconds": 15
+    "preview_duration_seconds": 15,
+    "mqtt_urls_setting": "mqtt_live_endpoints"
   }
 }

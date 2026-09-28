@@ -1,7 +1,7 @@
 # Desktop plugin worker protocol
 
 This document describes the first worker contract for optional desktop features.
-The current host API is **1.8.0**, independently of the application version. The
+The current host API is **1.9.0**, independently of the application version. The
 wire protocol and package manifest each start at schema version **1**. Android
 and iOS do not compile the worker host or include plugin UI contributions.
 
@@ -64,7 +64,7 @@ The host starts with the expected identity and the API version it selected:
 {
   "type": "hello",
   "protocol_version": 1,
-  "host_api_version": "1.8.0",
+  "host_api_version": "1.9.0",
   "plugin_id": "org.example.weather"
 }
 ```
@@ -76,7 +76,7 @@ before sending data:
 {
   "type": "ready",
   "protocol_version": 1,
-  "host_api_version": "1.8.0",
+  "host_api_version": "1.9.0",
   "plugin_id": "org.example.weather"
 }
 ```
@@ -118,7 +118,7 @@ startup deadline covers both steps. Early contributions, missing/mismatched or
 duplicate acknowledgments fail that generation. Packages without configuration
 permission receive no configuration frame and complete startup after `ready`.
 Workers must acknowledge the host API selected in `hello`; hard-coded 1.0 replies
-are incompatible with a 1.8 host. The wire protocol and manifest remain version 1.
+are incompatible with a 1.9 host. The wire protocol and manifest remain version 1.
 A configured worker should declare an API requirement such as `^1.1`.
 
 The complete configuration object is bounded to 32 KiB, in addition to the 64 KiB
@@ -175,7 +175,7 @@ the projection does not change action references or authority. HA 0.11 adds
 optional washer/dryer remaining-time profiles in existing text/status slots,
 retaining `^1.6` and the same authority, wire schema and contribution kinds.
 Existing workers with compatible
-`^1.3`, `^1.4`, `^1.5` or `^1.6` ranges still negotiate the selected 1.8 version; Frigate
+`^1.3`, `^1.4`, `^1.5` or `^1.6` ranges still negotiate the selected 1.9 version; Frigate
 retains its existing API range and flat contributions.
 
 ## Larger selected installations (host API 1.7)
@@ -811,3 +811,40 @@ operating-system failure is outside the normal shutdown contract.
 The implementation uses cancellable asynchronous pipe I/O and direct process
 management; see [Tokio process lifecycle](https://docs.rs/tokio/latest/tokio/process/index.html)
 and [Tauri run events](https://docs.rs/tauri/latest/tauri/enum.RunEvent.html).
+
+## MQTT camera URL previews (host API 1.9)
+
+A package using `mqtt_live` must require `^1.9` and declare `live_view` permission,
+`preview_duration_seconds` from 1 to 15, and `live_view.mqtt_urls_setting` naming
+a nonsecret string setting. The setting is a JSON camera-ID-to-endpoint map;
+it grants only canonical HTTPS `/api/camera_proxy_stream/camera.<entity>`
+destinations with no query, fragment or credentials. The optional manifest field
+is omitted when absent so existing signed manifests retain their exact bytes.
+The existing private `urls_setting` remains independently scoped.
+
+```json
+{
+  "type": "mqtt_live",
+  "id": "motion-unique-id",
+  "title": "HA Front camera motion detected",
+  "camera_id": "front",
+  "url": "https://ha.example/api/camera_proxy_stream/camera.front?token=fixture"
+}
+```
+
+The host validates both the camera ID and exact URL, allowing only one `token`
+query with 1–512 ASCII alphanumeric, `_` or `-` characters. It derives a grant
+for that single current URL and at most 15 seconds, with no download or
+notification-click authority. Unknown cameras or substituted destinations fail
+the worker generation with a generic reason. Diagnostics, routes and public
+snapshots omit URLs. Delivery uses the existing private owner-window IPC,
+incognito MJPEG viewer, focus preservation, per-plugin Always on top preference,
+camera cooldown and active-window deduplication, queue expiry and generation
+revocation. No native notification accompanies a `mqtt_live` frame.
+
+The Kerberos 0.2 worker adds exact QoS-0 subscriptions only for configured cameras
+on `homelab/cameras/live/<ID>`. It discards retained events and preserves its
+camera cooldown across reconnects using clean MQTT sessions. The payload has no
+timestamp: freshly republishing an old URL cannot be detected from this format.
+An image origin CSP does not provide strict HTTP redirect denial; configured HA
+endpoints must directly serve MJPEG without redirects.

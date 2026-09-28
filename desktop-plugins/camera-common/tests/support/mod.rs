@@ -53,7 +53,11 @@ impl Worker {
     }
 
     pub fn hello(&mut self) {
-        self.hello_with_api("1.8.0");
+        self.hello_with_api(if self.provider == "kerberos" {
+            "1.9.0"
+        } else {
+            "1.8.0"
+        });
     }
 
     pub fn hello_with_api(&mut self, api: &str) {

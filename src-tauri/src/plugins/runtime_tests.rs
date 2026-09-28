@@ -2335,3 +2335,69 @@ async fn mapped_live_preview_requires_explicit_permission_and_automatic_policy()
         host.shutdown().await;
     }
 }
+
+fn mqtt_live_spec(mode: &str) -> WorkerSpec {
+    let mut worker = configured_spec(mode);
+    worker.configuration.as_mut().unwrap().values["mqtt_live_endpoints"] = json!(json!({
+        "front":"https://ha.invalid/api/camera_proxy_stream/camera.front",
+        "rear":"https://ha.invalid/api/camera_proxy_stream/camera.rear"
+    })
+    .to_string());
+    let manifest: super::super::protocol::PluginManifest = serde_json::from_str(include_str!(
+        "../../../scripts/plugins/kerberos-manifest.json"
+    ))
+    .unwrap();
+    worker.live_view = super::super::protocol::LiveViewGrant::from_manifest_configuration(
+        &manifest,
+        worker.configuration.as_ref(),
+    )
+    .unwrap();
+    worker
+}
+
+#[tokio::test]
+async fn mqtt_live_is_native_scoped_with_camera_cooldown_and_no_toast_or_public_tokens() {
+    let host = PluginHost::default();
+    host.start(mqtt_live_spec("configuration_mqtt_live"))
+        .await
+        .unwrap();
+    ready(&host).await;
+    action(&host, "echo").await.unwrap();
+    let requests = host.take_http_video_requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "rotating token must not bypass per-camera cooldown"
+    );
+    for (request, camera) in requests.iter().zip(["front", "rear"]) {
+        assert!(request.live_preview);
+        assert!(
+            matches!(request.camera_id, Some(MediaCameraId::Explicit(ref id)) if id == &format!("mqtt:{camera}"))
+        );
+        assert_eq!(
+            request.grant.preview_duration(),
+            Some(Duration::from_secs(15))
+        );
+        assert!(request.grant.validate_preview_url(&request.url).is_ok());
+        assert!(request.grant.validate_url(&request.url).is_err());
+    }
+    assert!(!host.has_pending_notifications());
+    let public = serde_json::to_string(&host.snapshots()).unwrap();
+    assert!(!public.contains("ha.invalid") && !public.contains("private_fixture"));
+    host.revoke();
+    assert!(requests.iter().all(|r| !r.lease.is_active()));
+    host.shutdown().await;
+    for worker in [
+        configured_spec("configuration_mqtt_live"),
+        mqtt_live_spec("configuration_mqtt_live_bad_url"),
+    ] {
+        let host = PluginHost::default();
+        host.start(worker).await.unwrap();
+        wait_for(&host, |s| s.state == WorkerState::Failed).await;
+        assert!(host.take_http_video_requests().is_empty());
+        assert!(!host.has_pending_notifications());
+        let public = serde_json::to_string(&host.snapshots()).unwrap();
+        assert!(!public.contains("ha.invalid") && !public.contains("private_fixture"));
+        host.shutdown().await;
+    }
+}

@@ -14,6 +14,8 @@ pub struct Events {
     seen: HashMap<String, Instant>,
     labels: BTreeMap<String, String>,
     live_cameras: BTreeSet<String>,
+    mqtt_urls: inverter_camera_common::live_urls::CameraLiveUrls,
+    mqtt_seen: HashMap<String, Instant>,
 }
 
 struct Motion {
@@ -25,9 +27,41 @@ impl Events {
     pub fn new(config: &Configuration) -> Result<Self, &'static str> {
         Ok(Self {
             seen: HashMap::new(),
+            mqtt_seen: HashMap::new(),
+            mqtt_urls: config.mqtt_live_urls()?,
             labels: labels(config.values.camera_labels.as_deref(), valid_identity)?,
             live_cameras: config.live_urls()?.into_keys().collect(),
         })
+    }
+
+    fn mqtt_live(
+        &mut self,
+        topic: &str,
+        payload: &[u8],
+        retained: bool,
+        now: Instant,
+    ) -> Option<Value> {
+        if retained || payload.len() > 2048 {
+            return None;
+        }
+        let camera = topic.strip_prefix(inverter_camera_common::live_urls::TOPIC_PREFIX)?;
+        let value = std::str::from_utf8(payload).ok()?;
+        let url = self.mqtt_urls.resolve(camera, value).ok()?;
+        self.mqtt_seen
+            .retain(|_, last| now.saturating_duration_since(*last) < SILENCE);
+        if self.mqtt_seen.contains_key(camera) {
+            return None;
+        }
+        self.mqtt_seen.insert(camera.into(), now);
+        let name = self
+            .labels
+            .get(camera)
+            .cloned()
+            .unwrap_or_else(|| friendly_name(camera));
+        Some(
+            json!({"type":"mqtt_live", "id":format!("mqtt-{}", uuid::Uuid::new_v4()),
+            "camera_id":camera, "title":title("HA", &name), "url":url.as_str()}),
+        )
     }
 
     fn motion(
@@ -138,6 +172,12 @@ impl Provider for Events {
         now: Instant,
         unix_seconds: u64,
     ) -> Vec<Value> {
+        if topic.starts_with(inverter_camera_common::live_urls::TOPIC_PREFIX) {
+            return self
+                .mqtt_live(topic, payload, retained, now)
+                .into_iter()
+                .collect();
+        }
         let Some(motion) = self.motion(topic, payload, retained, now, unix_seconds) else {
             return Vec::new();
         };
@@ -387,6 +427,60 @@ mod tests {
         assert!(!serde_json::to_string(&[front, back])
             .unwrap()
             .contains("private"));
+    }
+
+    #[test]
+    fn mqtt_live_validates_before_cooldown_and_token_rotation_does_not_extend_preview() {
+        let endpoint = "https://ha.invalid/api/camera_proxy_stream/camera.front";
+        let config: Configuration = serde_json::from_value(json!({
+            "revision":"fixture", "values":{"mqtt_host":"localhost", "camera_labels":r#"{"front":"Entrance"}"#,
+            "mqtt_live_endpoints":json!({"front":endpoint}).to_string()}, "secrets":{}
+        })).unwrap();
+        config.validate().unwrap();
+        let mut events = Events::new(&config).unwrap();
+        let now = Instant::now();
+        let topic = "homelab/cameras/live/front";
+        let url = format!("{endpoint}?token=private_fixture");
+        for payload in [
+            b"motion".as_slice(),
+            &[0xff],
+            b"",
+            b"https://evil.invalid/?token=private",
+            &vec![b'a'; 2049],
+        ] {
+            assert!(events.frames(topic, payload, false, now, 0).is_empty());
+        }
+        assert!(events
+            .frames(topic, url.as_bytes(), true, now, 0)
+            .is_empty());
+        assert!(events
+            .frames(
+                "homelab/cameras/live/front/extra",
+                url.as_bytes(),
+                false,
+                now,
+                0
+            )
+            .is_empty());
+        let first = events.frames(topic, url.as_bytes(), false, now, 0);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["type"], "mqtt_live");
+        assert_eq!(first[0]["title"], "HA Entrance camera motion detected");
+        let rotated = format!("{endpoint}?token=rotated_fixture");
+        assert!(events
+            .frames(
+                topic,
+                rotated.as_bytes(),
+                false,
+                now + Duration::from_secs(14),
+                0
+            )
+            .is_empty());
+        let next = events.frames(topic, rotated.as_bytes(), false, now + SILENCE, 0);
+        assert_eq!(next.len(), 1);
+        assert_ne!(first[0]["id"], next[0]["id"]);
+        assert_eq!(next[0]["url"], rotated);
+        assert_eq!(events.mqtt_seen.len(), 1);
     }
 
     #[test]

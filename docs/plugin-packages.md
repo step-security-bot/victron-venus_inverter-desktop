@@ -49,6 +49,15 @@ packages without compiling. For a published beta, install its app and update the
 required URLs/checksums from `desktop-plugins-<target>.json` in your configuration
 backup. Local archive sets remain available for inspection after restoration.
 
+Kerberos **0.2** additionally accepts plain camera URLs from HA MQTT on
+`homelab/cameras/live/<ID>` with host API **1.9**. Configure the optional
+**MQTT live camera endpoints** map in that plugin with token-free HTTPS HA camera
+proxy endpoints; its existing broker connection subscribes to those exact IDs.
+The host independently checks each fresh URL, displays MJPEG for 15 seconds and
+keeps event tokens out of saved settings and public snapshots. This needs both
+the new host and Kerberos package; upgrading only the desktop does not replace
+an existing package pin. See the [configuration and limits](../desktop-plugins/kerberos/README.md#home-assistant-mqtt-url-previews).
+
 Automatic Frigate and Kerberos motion previews do not show a duplicate system
 notification over the video. Cameras without a configured preview continue to
 send ordinary motion notifications.

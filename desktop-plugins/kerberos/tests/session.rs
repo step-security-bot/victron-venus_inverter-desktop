@@ -254,9 +254,9 @@ fn blocked_output_session(eof: bool) {
     // A valid large semantic-version build identifier produces a full-size
     // Ready frame. Retain the read handle without draining it, then queue the
     // configuration: its acknowledgement cannot fit in the occupied pipe.
-    let mut hello = json!({"type":"hello","protocol_version":1,"host_api_version":"1.8.0+","plugin_id":format!("inverter-desktop.{PROVIDER}")});
+    let mut hello = json!({"type":"hello","protocol_version":1,"host_api_version":"1.9.0+","plugin_id":format!("inverter-desktop.{PROVIDER}")});
     let padding = 65536 - serde_json::to_vec(&hello).unwrap().len() - 1;
-    hello["host_api_version"] = json!(format!("1.8.0+{}", "a".repeat(padding)));
+    hello["host_api_version"] = json!(format!("1.9.0+{}", "a".repeat(padding)));
     let input = worker.0.stdin.as_mut().unwrap();
     writeln!(input, "{hello}").unwrap();
     writeln!(
@@ -298,4 +298,92 @@ fn shutdown_does_not_wait_for_backpressured_stdout() {
 #[test]
 fn eof_does_not_wait_for_backpressured_stdout() {
     blocked_output_session(true);
+}
+
+#[test]
+fn mqtt_live_uses_exact_subscriptions_no_retained_replay_and_cooldown_survives_reconnect() {
+    let listener = listener();
+    let mut worker = start();
+    worker.hello();
+    let endpoint = "https://ha.invalid/api/camera_proxy_stream/camera.front";
+    let back = "https://ha.invalid/api/camera_proxy_stream/camera.back";
+    let mut config = configuration(listener.local_addr().unwrap().port());
+    config["configuration"]["values"]["mqtt_live_endpoints"] =
+        json!(json!({"front":endpoint,"back":back}).to_string());
+    worker.configure_frame(config);
+    let topics = [
+        TOPICS[0],
+        TOPICS[1],
+        "homelab/cameras/live/back",
+        "homelab/cameras/live/front",
+    ];
+    let mut stream = subscribe(&listener, PROVIDER, &topics);
+    worker.status("Connected");
+    let fresh = format!("{endpoint}?token=private_fixture");
+    publish(
+        &mut stream,
+        "homelab/cameras/live/front",
+        fresh.as_bytes(),
+        true,
+    );
+    publish(
+        &mut stream,
+        "homelab/cameras/live/unknown",
+        fresh.as_bytes(),
+        false,
+    );
+    publish(
+        &mut stream,
+        "homelab/cameras/live/front",
+        format!("{back}?token=private_fixture").as_bytes(),
+        false,
+    );
+    assert!(worker
+        .frames
+        .recv_timeout(Duration::from_millis(150))
+        .is_err());
+    publish(
+        &mut stream,
+        "homelab/cameras/live/front",
+        fresh.as_bytes(),
+        false,
+    );
+    let preview = worker.frame();
+    assert_eq!(preview["type"], "mqtt_live");
+    assert_eq!(preview["camera_id"], "front");
+    assert_eq!(preview["url"], fresh);
+    drop(stream);
+    worker.status("Disconnected");
+    worker.status("Connecting");
+    let mut stream = subscribe(&listener, PROVIDER, &topics);
+    worker.status("Connected");
+    publish(
+        &mut stream,
+        "homelab/cameras/live/front",
+        format!("{endpoint}?token=rotated_fixture").as_bytes(),
+        false,
+    );
+    publish(
+        &mut stream,
+        "homelab/cameras/live/back",
+        format!("{back}?token=current_fixture").as_bytes(),
+        false,
+    );
+    let preview = worker.frame();
+    assert_eq!(preview["type"], "mqtt_live");
+    assert_eq!(preview["camera_id"], "back");
+    assert!(worker
+        .frames
+        .recv_timeout(Duration::from_millis(150))
+        .is_err());
+    worker.shutdown();
+    let mut stderr = String::new();
+    worker
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.is_empty());
 }

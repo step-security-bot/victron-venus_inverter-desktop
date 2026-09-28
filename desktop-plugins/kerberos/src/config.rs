@@ -25,6 +25,8 @@ pub struct Values {
     pub mqtt_topics: String,
     #[serde(default)]
     pub camera_labels: Option<String>,
+    #[serde(default)]
+    pub mqtt_live_endpoints: Option<String>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -64,18 +66,35 @@ impl Configuration {
         Ok(())
     }
     pub fn broker(&self) -> Result<Broker, &'static str> {
+        let mut subscribed = topics(&self.values.mqtt_topics, "kerberos")?;
+        subscribed.extend(self.mqtt_live_urls()?.topics());
+        if subscribed
+            .iter()
+            .map(|topic| topic.len() + 3)
+            .sum::<usize>()
+            > 8000
+        {
+            return Err("camera subscriptions exceed packet limit");
+        }
         let broker = Broker {
             provider: "kerberos",
             title: "Kerberos",
             host: self.values.mqtt_host.clone(),
             port: self.values.mqtt_port,
             tls: self.values.mqtt_tls,
-            topics: topics(&self.values.mqtt_topics, "kerberos")?,
+            topics: subscribed,
             username: self.secrets.mqtt_username.clone(),
             password: self.secrets.mqtt_password.clone(),
         };
         validate_broker(&broker)?;
         Ok(broker)
+    }
+    pub fn mqtt_live_urls(
+        &self,
+    ) -> Result<inverter_camera_common::live_urls::CameraLiveUrls, &'static str> {
+        inverter_camera_common::live_urls::CameraLiveUrls::parse(
+            self.values.mqtt_live_endpoints.as_deref(),
+        )
     }
     pub fn live_urls(&self) -> Result<std::collections::BTreeMap<String, String>, &'static str> {
         let mapping =

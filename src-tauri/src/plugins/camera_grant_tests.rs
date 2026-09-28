@@ -252,6 +252,7 @@ fn mapped_preview_policy_requires_explicit_permission_and_bounded_duration() {
     let config = live_configuration(json!({"front": "https://camera.invalid/live"}).to_string());
     for seconds in [1, 15, 30] {
         let mut manifest = manifest("kerberos");
+        manifest.live_view.as_mut().unwrap().mqtt_urls_setting = None;
         manifest
             .live_view
             .as_mut()
@@ -270,6 +271,7 @@ fn mapped_preview_policy_requires_explicit_permission_and_bounded_duration() {
     }
     for seconds in [0, 31, u16::MAX] {
         let mut manifest = manifest("kerberos");
+        manifest.live_view.as_mut().unwrap().mqtt_urls_setting = None;
         manifest
             .live_view
             .as_mut()
@@ -549,4 +551,61 @@ async fn bearer_is_not_forwarded_by_redirects_or_reused_by_another_plugin() {
     service.window_failed(&second.media_id);
     server.await.unwrap();
     service.shutdown().await.unwrap();
+}
+
+#[test]
+fn mqtt_urls_require_native_camera_authority_and_never_grant_downloads_or_legacy_clicks() {
+    let manifest = manifest("kerberos");
+    let endpoint = "https://ha.invalid/api/camera_proxy_stream/camera.front";
+    let mut config = live_configuration("{}".into());
+    config.values["mqtt_live_endpoints"] = json!(json!({"front":endpoint}).to_string());
+    let grant = LiveViewGrant::from_manifest_configuration(&manifest, Some(&config))
+        .unwrap()
+        .unwrap();
+    let value = format!("{endpoint}?token=private_fixture");
+    let (url, media) = grant.mqtt_preview("front", &value).unwrap();
+    assert_eq!(url.as_str(), value);
+    assert_eq!(media.preview_duration(), Some(Duration::from_secs(15)));
+    assert_eq!(media.cooldown(), Duration::from_secs(15));
+    assert!(media.validate_preview_url(&value).is_ok());
+    assert!(media.validate_url(&value).is_err());
+    assert!(media
+        .validate_preview_url(&format!("{endpoint}?token=another_fixture"))
+        .is_err());
+    assert!(grant.resolve("front").is_none());
+    assert!(grant.preview("front").unwrap().is_none());
+    assert!(grant.mqtt_preview("back", &value).is_err());
+    let frame = json!({"type":"mqtt_live","id":"fresh-event","title":"Camera", "camera_id":"front","url":value});
+    let bytes = format!("{frame}\n");
+    let message = parse_worker_frame(bytes.as_bytes()).unwrap();
+    for debug in [
+        format!("{message:?}"),
+        format!("{media:?}"),
+        format!("{grant:?}"),
+    ] {
+        assert!(!debug.contains("private_fixture") && !debug.contains("ha.invalid"));
+    }
+    let mut legacy = manifest.clone();
+    legacy.live_view.as_mut().unwrap().mqtt_urls_setting = None;
+    let legacy = LiveViewGrant::from_manifest_configuration(&legacy, Some(&config))
+        .unwrap()
+        .unwrap();
+    assert!(legacy.mqtt_preview("front", &value).is_err());
+    for seconds in [None, Some(0), Some(16), Some(30)] {
+        let mut changed = manifest.clone();
+        changed.live_view.as_mut().unwrap().preview_duration_seconds = seconds;
+        assert!(changed.validate().is_err());
+    }
+    for replacement in [
+        json!({"type":"string","writeOnly":true}),
+        json!({"type":"number"}),
+        json!(null),
+    ] {
+        let mut changed = manifest.clone();
+        changed.config_schema["properties"]["mqtt_live_endpoints"] = replacement;
+        assert!(changed.validate().is_err());
+    }
+    config.values["mqtt_live_endpoints"] = json!(json!({"front":value}).to_string());
+    let error = LiveViewGrant::from_manifest_configuration(&manifest, Some(&config)).unwrap_err();
+    assert!(!error.contains("private_fixture") && !error.contains("ha.invalid"));
 }

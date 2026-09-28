@@ -1800,6 +1800,31 @@ fn handle_frame(
             // The automatic preview already announces motion. A native toast
             // for the same event would cover the camera window.
         }
+        WorkerMessage::MqttLive {
+            id,
+            title,
+            camera_id,
+            url,
+        } => {
+            let mapping = spec
+                .live_view
+                .as_ref()
+                .ok_or(Outcome::Failed("worker_mqtt_live_unauthorized"))?;
+            let (url, grant) = mapping
+                .mqtt_preview(&camera_id, &url)
+                .map_err(|_| Outcome::Failed("worker_mqtt_live_url_invalid"))?;
+            notify = entry.queue_http_video(
+                &grant,
+                id,
+                url.into(),
+                title,
+                MediaAdmission {
+                    kind: HttpMediaKind::Video,
+                    cooldown_id: Some(format!("mqtt:{camera_id}")),
+                    live_preview: true,
+                },
+            );
+        }
         WorkerMessage::LiveView {
             id,
             title,
