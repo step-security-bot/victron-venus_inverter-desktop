@@ -29,6 +29,13 @@ export default defineConfig(async () => ({
         // keep the two in separate chunks.
         codeSplitting: {
           groups: [
+            // vue-echarts imports Vue too. Keep the shared runtime out of the
+            // chart chunk so camera windows can load Vue without loading charts.
+            {
+              name: 'vue-vendor',
+              test: /\/node_modules\/(?:vue|@vue\/[^/]+)\//,
+              priority: 10,
+            },
             // zrender is an internal dependency of echarts (~175 kB).
             { name: 'zrender-vendor', test: /\/node_modules\/zrender\// },
             // echarts + vue-echarts wrapper (~408 kB after splitting zrender).

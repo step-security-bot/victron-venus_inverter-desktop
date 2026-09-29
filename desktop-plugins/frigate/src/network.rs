@@ -203,7 +203,11 @@ pub async fn run(
                     // The bounded queue drops events while the host is slow;
                     // neither video fetching nor pipe backpressure blocks MQTT.
                     if let Some(frame) = frame.filter(|_| notification_budget.take(now)) {
-                        let _ = output.try_send(frame)?;
+                        if frame["type"] == "http_live" {
+                            let _ = output.try_send_before(frame, now + Duration::from_secs(3))?;
+                        } else {
+                            let _ = output.try_send(frame)?;
+                        }
                     }
                 }
                 Err(_) => break,

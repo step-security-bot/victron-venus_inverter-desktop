@@ -38,6 +38,7 @@ fn request(base: &str, lease: GenerationLease) -> QueuedHttpVideo {
         .unwrap()
         .unwrap();
     QueuedHttpVideo {
+        created: tokio::time::Instant::now(),
         camera_id: None,
         live_preview: false,
         lease,
@@ -1604,5 +1605,73 @@ async fn saturated_live_preview_expires_in_queue_and_never_replays_when_capacity
         service.window_destroyed(&window_label);
     }
     idle(&service).await;
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn expired_motion_cannot_start_even_when_a_native_window_is_available() {
+    let (_directory, service, mut events) = service(policy()).await;
+    let mut expired = live_request("http://127.0.0.1:1", lease());
+    expired.created -= Duration::from_secs(3);
+    service.try_submit(expired).unwrap();
+    assert!(!service.has_owned_work());
+    assert!(events.try_recv().is_err());
+
+    // A fresh event from a different camera can still start immediately.
+    service
+        .try_submit(live_request("http://127.0.0.1:1", lease()))
+        .unwrap();
+    let fresh = ready(&mut events).await;
+    service.window_destroyed(&fresh.window_label);
+    idle(&service).await;
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn live_window_queue_keeps_the_original_runtime_delivery_deadline() {
+    let (_directory, service, mut events) = service(policy()).await;
+    let owner = lease();
+    let mut previews = Vec::new();
+    for _ in 0..MAX_WINDOWS {
+        service
+            .try_submit(live_request("http://127.0.0.1:1", owner.clone()))
+            .unwrap();
+        previews.push(ready(&mut events).await);
+    }
+    tokio::time::pause();
+    let mut queued = live_request("http://127.0.0.1:1", owner);
+    // Two seconds were already spent awaiting runtime dispatch. Only one
+    // second remains; entering the native queue cannot renew that budget.
+    queued.created -= Duration::from_secs(2);
+    service.try_submit(queued).unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(service.0.state.lock().unwrap().items.len(), MAX_WINDOWS + 1);
+    tokio::time::advance(Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(service.0.state.lock().unwrap().items.len(), MAX_WINDOWS);
+    assert!(events.try_recv().is_err());
+    for preview in previews {
+        service.window_destroyed(&preview.window_label);
+    }
+    tokio::time::resume();
+    idle(&service).await;
+    assert!(events.try_recv().is_err(), "expired motion cannot replay");
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn delayed_live_task_cannot_reserve_available_capacity_after_motion_expires() {
+    let (_directory, service, mut events) = service(policy()).await;
+    tokio::time::pause();
+    service
+        .try_submit(live_request("http://127.0.0.1:1", lease()))
+        .unwrap();
+    // The worker task has not run yet. A delayed first poll must not turn an
+    // expired motion into Ready merely because capacity is immediately free.
+    tokio::time::advance(Duration::from_secs(3)).await;
+    tokio::task::yield_now().await;
+    assert!(!service.has_owned_work());
+    assert!(events.try_recv().is_err());
+    tokio::time::resume();
     service.shutdown().await.unwrap();
 }

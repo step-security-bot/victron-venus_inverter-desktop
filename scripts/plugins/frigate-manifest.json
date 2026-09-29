@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plugin_id": "inverter-desktop.frigate",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "host_api": "^1.8",
   "target": "TARGET",
   "entrypoint": "bin/inverter-frigate-worker",

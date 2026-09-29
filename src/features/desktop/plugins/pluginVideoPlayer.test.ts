@@ -42,6 +42,8 @@ async function player(params: Record<string, string>, label = owner) {
 }
 
 beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
   native.createPattern.mockReset().mockReturnValue({})
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
     createPattern: native.createPattern,
@@ -109,7 +111,11 @@ describe('native-owned plugin video player', () => {
     native.createPattern.mockReturnValue({})
     await vi.advanceTimersByTimeAsync(100)
     expect(native.invoke).toHaveBeenLastCalledWith('reveal_plugin_video_window')
+    native.createPattern.mockClear()
+    await wrapper.get('img').trigger('load')
+    await wrapper.get('img').trigger('load')
     await vi.advanceTimersByTimeAsync(15000)
+    expect(native.createPattern).not.toHaveBeenCalled()
     expect(native.invoke).toHaveBeenCalledTimes(2)
     expect(native.warn).not.toHaveBeenCalled()
   })
@@ -139,6 +145,108 @@ describe('native-owned plugin video player', () => {
     expect(wrapper.html()).not.toContain('private')
     expect(native.invoke).toHaveBeenCalledTimes(2)
   })
+
+  it.each(['timeout', 'close', 'unmount'])(
+    'ignores a late live URL rejection after %s',
+    async (action) => {
+      vi.useFakeTimers()
+      let rejectUrl: (reason: Error) => void = () => {}
+      native.invoke.mockImplementation((command) =>
+        command === 'get_live_preview_url'
+          ? new Promise<string>((_, reject) => {
+              rejectUrl = reject
+            })
+          : Promise.resolve()
+      )
+      const wrapper = await player(
+        { pluginMedia: id, pluginMediaKind: 'live' },
+        `plugin-preview-${id}`
+      )
+      if (action === 'timeout') await vi.advanceTimersByTimeAsync(10000)
+      else if (action === 'close') await wrapper.get('button[aria-label="Close"]').trigger('click')
+      else {
+        wrapper.unmount()
+        mounted.splice(mounted.indexOf(wrapper), 1)
+      }
+      native.invoke.mockClear()
+      native.warn.mockClear()
+      rejectUrl(new Error('late private URL resolution failure'))
+      await flushPromises()
+      expect(native.warn).not.toHaveBeenCalled()
+      expect(native.invoke).not.toHaveBeenCalled()
+      if (action === 'timeout') {
+        expect(wrapper.get('[role="alert"]').text()).toBe(
+          'Camera media did not become ready in time.'
+        )
+      }
+    }
+  )
+
+  it.each(['timeout', 'error', 'unmount'])(
+    'releases an ongoing live image request on %s',
+    async (action) => {
+      vi.useFakeTimers()
+      native.invoke.mockResolvedValue('https://camera.invalid/live?token=private')
+      const wrapper = await player(
+        { pluginMedia: id, pluginMediaKind: 'live' },
+        `plugin-preview-${id}`
+      )
+      // Keep the actual node: detaching it must not leave the remote source alive.
+      const image = wrapper.get('img')
+      if (action === 'timeout') await vi.advanceTimersByTimeAsync(10000)
+      else if (action === 'error') await image.trigger('error')
+      else {
+        wrapper.unmount()
+        mounted.splice(mounted.indexOf(wrapper), 1)
+      }
+      expect(image.element.hasAttribute('src')).toBe(false)
+      expect(vi.getTimerCount()).toBe(0)
+      native.warn.mockClear()
+      native.invoke.mockClear()
+      await image.trigger('error')
+      await image.trigger('load')
+      expect(native.warn).not.toHaveBeenCalled()
+      expect(native.invoke).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['timeout', 'error', 'unmount'])(
+    'stops local video and ignores pending playback rejection on %s',
+    async (action) => {
+      vi.useFakeTimers()
+      const wrapper = await player({ pluginMedia: id })
+      const video = wrapper.get('video')
+      let rejectPlay: (reason: Error) => void = () => {}
+      vi.spyOn(video.element, 'play').mockImplementation(
+        () =>
+          new Promise<void>((_, reject) => {
+            rejectPlay = reject
+          })
+      )
+      await video.trigger('loadedmetadata')
+      if (action === 'timeout') await vi.advanceTimersByTimeAsync(10000)
+      else if (action === 'error') await video.trigger('error')
+      else {
+        wrapper.unmount()
+        mounted.splice(mounted.indexOf(wrapper), 1)
+      }
+      expect(video.element.hasAttribute('src')).toBe(false)
+      expect(video.element.pause).toHaveBeenCalledOnce()
+      expect(video.element.load).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+      native.warn.mockClear()
+      native.invoke.mockClear()
+      rejectPlay(new Error('aborted by media cleanup'))
+      await flushPromises()
+      expect(native.warn).not.toHaveBeenCalled()
+      expect(native.invoke).not.toHaveBeenCalled()
+      if (action === 'timeout') {
+        expect(wrapper.get('[role="alert"]').text()).toBe(
+          'Camera media did not become ready in time.'
+        )
+      }
+    }
+  )
 
   it.each(['close', 'unmount'])('never reveals a pending frame after %s', async (action) => {
     vi.useFakeTimers()
@@ -171,6 +279,33 @@ describe('native-owned plugin video player', () => {
     expect(native.warn).toHaveBeenCalledExactlyOnceWith('Cannot reveal owned plugin video window')
     expect(wrapper.html()).not.toContain('private reason')
   })
+
+  it.each(['close', 'unmount'])(
+    'ignores a late native reveal rejection after %s',
+    async (action) => {
+      let rejectReveal: (reason: Error) => void = () => {}
+      native.invoke.mockImplementation((command) =>
+        command === 'reveal_plugin_video_window'
+          ? new Promise<void>((_, reject) => {
+              rejectReveal = reject
+            })
+          : Promise.resolve()
+      )
+      const wrapper = await player({ pluginMedia: id, pluginMediaKind: 'image' })
+      await decodedImage(wrapper).trigger('load')
+      await flushPromises()
+      if (action === 'close') await wrapper.get('button[aria-label="Close"]').trigger('click')
+      else {
+        wrapper.unmount()
+        mounted.splice(mounted.indexOf(wrapper), 1)
+      }
+      native.invoke.mockClear()
+      rejectReveal(new Error('native owner already destroyed'))
+      await flushPromises()
+      expect(native.warn).not.toHaveBeenCalled()
+      expect(native.invoke).not.toHaveBeenCalled()
+    }
+  )
 
   it('loads a live stream only through its zero-argument owner command and leaves lifetime native', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -341,6 +476,35 @@ describe('native-owned plugin video player', () => {
     expect(native.invoke).toHaveBeenCalledTimes(2)
     expect(native.invoke).toHaveBeenLastCalledWith('close_plugin_video_window')
   })
+
+  it.each(['live', 'video'])(
+    'releases %s before the native close command settles',
+    async (kind) => {
+      let resolveClose: () => void = () => {}
+      native.invoke.mockImplementation((command) =>
+        command === 'get_live_preview_url'
+          ? Promise.resolve('https://camera.invalid/live')
+          : new Promise<void>((resolve) => {
+              resolveClose = resolve
+            })
+      )
+      const wrapper = await player(
+        { pluginMedia: id, pluginMediaKind: kind },
+        kind === 'live' ? `plugin-preview-${id}` : owner
+      )
+      const media = wrapper.get(kind === 'live' ? 'img' : 'video').element
+      await wrapper.get('button[aria-label="Close"]').trigger('click')
+      expect(media.hasAttribute('src')).toBe(false)
+      if (media instanceof HTMLVideoElement) {
+        expect(media.pause).toHaveBeenCalledOnce()
+        expect(media.load).toHaveBeenCalledOnce()
+      }
+      expect(native.invoke).toHaveBeenLastCalledWith('close_plugin_video_window')
+      resolveClose()
+      await flushPromises()
+      expect(native.warn).not.toHaveBeenCalled()
+    }
+  )
 
   it('uses only the owned drag command for the title strip and no generic drag region', async () => {
     const wrapper = await player({ pluginMedia: id, name: 'Front' })

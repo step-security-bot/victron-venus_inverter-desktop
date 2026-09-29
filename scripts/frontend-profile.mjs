@@ -89,12 +89,44 @@ export function assertMobileModuleGraph(modules) {
   }
 }
 
+/** Follow only static chunk imports: dynamic pages are loaded by their owner. */
+export function staticEntryModules(bundle) {
+  const pending = Object.values(bundle)
+    .filter((chunk) => chunk.type === 'chunk' && chunk.isEntry)
+    .map((chunk) => chunk.fileName)
+  const visited = new Set()
+  const modules = new Set()
+  while (pending.length) {
+    const name = pending.pop()
+    if (visited.has(name)) continue
+    visited.add(name)
+    const chunk = bundle[name]
+    if (chunk?.type !== 'chunk') continue
+    Object.keys(chunk.modules).forEach((id) => modules.add(id))
+    pending.push(...chunk.imports)
+  }
+  return [...modules]
+}
+
+export function assertLightweightDesktopEntry(modules) {
+  const heavy = modules.filter(
+    (id) =>
+      /^src\/(?:App|Config|About|MobileShell)\.vue$/.test(id) ||
+      /(?:^|\/)node_modules\/(?:echarts|vue-echarts|zrender)\//.test(id)
+  )
+  if (heavy.length) {
+    throw new Error(
+      `Dashboard or configuration code in camera-window startup:\n${heavy.join('\n')}`
+    )
+  }
+}
+
 /** Vite/Rolldown plugin: inspect actual loaded modules and ship an audit receipt. */
 export function frontendProfileAudit(root, profile) {
   const prefix = realpathSync(root).replaceAll('\\', '/') + '/'
   return {
     name: 'inverter-frontend-profile',
-    generateBundle() {
+    generateBundle(_options, bundle) {
       const modules = [
         ...new Set(
           [...this.getModuleIds()]
@@ -113,6 +145,14 @@ export function frontendProfileAudit(root, profile) {
       if (!modules.includes('src/main.ts')) throw new Error('Frontend module graph is empty')
       if (profile === 'mobile') assertMobileModuleGraph(modules)
       assertCoreModuleGraph(modules)
+      if (profile === 'desktop') {
+        assertLightweightDesktopEntry(
+          staticEntryModules(bundle).map((id) => {
+            const clean = id.replaceAll('\\', '/').split('?')[0]
+            return clean.startsWith(prefix) ? clean.slice(prefix.length) : clean
+          })
+        )
+      }
       this.emitFile({
         type: 'asset',
         fileName: 'build-profile.json',

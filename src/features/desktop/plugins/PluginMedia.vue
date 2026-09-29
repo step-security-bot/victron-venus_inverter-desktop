@@ -77,7 +77,7 @@
 import { X } from '@lucide/vue'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import ErrorBoundary from '../../../components/ErrorBoundary.vue'
 import { logger } from '../../../logger'
 import { pluginVideoRoute } from './pluginVideoRoute'
@@ -105,6 +105,22 @@ function clearReadinessTimers() {
   framePoll = null
 }
 
+function releaseMedia() {
+  // Removing a node (or updating a ref after unmount) does not explicitly end
+  // its media request. Release the source while the element is still available,
+  // especially for an ongoing MJPEG response and a pending video.play().
+  imageElement.value?.removeAttribute('src')
+  const video = videoElement.value
+  if (video?.hasAttribute('src')) {
+    video.pause()
+    video.removeAttribute('src')
+    video.load()
+  }
+  videoUrl.value = ''
+  playing = false
+  imageReadinessContext = null
+}
+
 async function revealWindow() {
   if (!ownedRoute || disposed || closing || revealRequested) return
   revealRequested = true
@@ -119,6 +135,7 @@ async function revealWindow() {
       startImageCloseTimer()
     }
   } catch {
+    if (disposed || closing) return
     logger.warn('Cannot reveal owned plugin video window')
     void closeWindow()
   }
@@ -161,7 +178,7 @@ function hasImageFrame() {
 
 async function startPlayback() {
   const video = videoElement.value
-  if (!video || disposed || closing) return
+  if (!video || disposed || closing || errorMessage.value) return
   try {
     // Explicit muted playback also starts in a hidden WebKit window, where
     // visibility-based autoplay may wait for the window to be shown.
@@ -203,18 +220,24 @@ function startImageCloseTimer() {
 }
 
 function onImageLoad() {
+  if (disposed || closing || revealRequested || errorMessage.value) return
   if (hasImageFrame()) void revealWindow()
 }
 
 function showError(message: string, name?: string | null) {
-  videoUrl.value = ''
+  if (disposed || closing || errorMessage.value) return
   setName(name)
   errorMessage.value = message
+  clearReadinessTimers()
+  clearImageCloseTimer()
+  releaseMedia()
   logger.warn('Camera clip error:', message)
   void revealWindow()
 }
 
 function onMediaError() {
+  if (disposed || closing || errorMessage.value) return
+  clearReadinessTimers()
   clearImageCloseTimer()
   errorMessage.value =
     mediaKind.value === 'live'
@@ -229,7 +252,7 @@ function onMediaError() {
         ? 'Plugin image display failed'
         : 'Plugin video playback failed'
   )
-  videoUrl.value = ''
+  releaseMedia()
   void revealWindow()
 }
 
@@ -238,6 +261,7 @@ async function closeWindow() {
   closing = true
   clearReadinessTimers()
   clearImageCloseTimer()
+  releaseMedia()
   try {
     await invoke('close_plugin_video_window')
   } catch {
@@ -301,9 +325,9 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
   disposed = true
-  videoUrl.value = ''
+  releaseMedia()
   clearImageCloseTimer()
   clearReadinessTimers()
 })

@@ -4,7 +4,10 @@
 
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
-use std::io::{BufRead, Write};
+use std::{
+    io::{BufRead, Write},
+    time::Instant,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
@@ -86,6 +89,7 @@ pub enum StopReason {
 struct Outbound {
     bytes: Vec<u8>,
     written: oneshot::Sender<Result<(), &'static str>>,
+    expires_at: Option<Instant>,
 }
 
 /// Clones share one bounded queue and its single flush-owning writer thread.
@@ -108,7 +112,11 @@ impl Output {
         let bytes = encode_frame(value)?;
         let (written, result) = oneshot::channel();
         self.sender
-            .send(Outbound { bytes, written })
+            .send(Outbound {
+                bytes,
+                written,
+                expires_at: None,
+            })
             .await
             .map_err(|_| "host output closed")?;
         result.await.map_err(|_| "host output closed")?
@@ -117,9 +125,24 @@ impl Output {
     /// Best-effort traffic must not block a worker's network event loop.
     /// Handshake/configuration/status use send() and wait for the actual flush.
     pub fn try_send(&self, value: Value) -> Result<bool, &'static str> {
+        self.try_enqueue(value, None)
+    }
+
+    /// Drop time-sensitive traffic if its original deadline passes while queued.
+    /// This bounds the local queue, not an already-started blocking pipe write.
+    /// The deadline stays inside this process and never changes the wire format.
+    pub fn try_send_before(&self, value: Value, expires_at: Instant) -> Result<bool, &'static str> {
+        self.try_enqueue(value, Some(expires_at))
+    }
+
+    fn try_enqueue(&self, value: Value, expires_at: Option<Instant>) -> Result<bool, &'static str> {
         let bytes = encode_frame(value)?;
         let (written, _) = oneshot::channel();
-        match self.sender.try_send(Outbound { bytes, written }) {
+        match self.sender.try_send(Outbound {
+            bytes,
+            written,
+            expires_at,
+        }) {
             Ok(()) => Ok(true),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err("host output closed"),
@@ -185,6 +208,13 @@ fn read_frames<R: BufRead, C: DeserializeOwned>(
 
 fn write_frames<W: Write>(mut output: W, mut outgoing: mpsc::Receiver<Outbound>) {
     while let Some(frame) = outgoing.blocking_recv() {
+        if frame
+            .expires_at
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            let _ = frame.written.send(Err("worker response expired"));
+            continue;
+        }
         let result = output
             .write_all(&frame.bytes)
             .and_then(|()| output.flush())

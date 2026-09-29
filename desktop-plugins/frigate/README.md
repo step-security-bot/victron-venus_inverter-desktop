@@ -1,7 +1,7 @@
 # Frigate worker
 
 `inverter-frigate-worker` is the optional desktop package
-`inverter-desktop.frigate`, version 0.4.0, requiring host API `^1.8`. It opens its
+`inverter-desktop.frigate`, version 0.4.1, requiring host API `^1.8`. It opens its
 own MQTT connection, emits connection status, and requests a 15-second live
 preview when a direct Frigate HTTP address is configured. Motion without a
 preview sends an ordinary notification. It belongs to the generic **Cameras** plugin group, so the dashboard
@@ -95,6 +95,10 @@ its independent permission, rate, queue, and generation checks. The existing
 two-frame output queue drops excess events while the host is slow, keeping MQTT
 polling responsive. Handshake, configuration acknowledgement, and status frames
 still wait for their writes to complete. Event delivery is best effort.
+Automatic `http_live` previews expire after three seconds in that local output
+queue, measured from MQTT receipt. The writer drops them before starting a write;
+it cannot interrupt a blocking pipe write already in progress. Notifications and
+recorded `http_video` clips keep their existing delivery behavior.
 See the [notification contract](../../docs/plugin-worker-protocol.md#native-desktop-notifications-host-api-12)
 for host queue limits and delivery semantics. Native submission does not prove
 that the OS displayed a notification or that the user granted display permission.

@@ -48,6 +48,9 @@ const NOTIFICATION_DEDUP_TTL: Duration = Duration::from_secs(10 * 60);
 const NOTIFICATION_DELIVERY_TTL: Duration = Duration::from_secs(30);
 
 const HTTP_VIDEO_QUEUE_CAPACITY: usize = 4;
+/// Automatic motion must not replay after a busy host resumes. One budget
+/// covers both runtime dispatch and the shared native-window queue.
+const LIVE_PREVIEW_DELIVERY_TTL: Duration = Duration::from_secs(3);
 
 /// Stable camera identity for native admission only, never public snapshots.
 #[derive(Clone, PartialEq, Eq)]
@@ -64,6 +67,7 @@ enum MediaCooldownId {
 
 /// Native ownership only: URLs/titles never enter public worker snapshots.
 pub(crate) struct QueuedHttpVideo {
+    pub created: Instant,
     pub camera_id: Option<MediaCameraId>,
     pub live_preview: bool,
     pub lease: GenerationLease,
@@ -74,9 +78,20 @@ pub(crate) struct QueuedHttpVideo {
     pub media_kind: HttpMediaKind,
 }
 
+impl QueuedHttpVideo {
+    pub(crate) fn delivery_deadline(&self) -> Instant {
+        self.created
+            + if self.live_preview {
+                LIVE_PREVIEW_DELIVERY_TTL
+            } else {
+                NOTIFICATION_DELIVERY_TTL
+            }
+    }
+}
+
 #[derive(Default)]
 struct HttpVideoState {
-    pending: VecDeque<(QueuedHttpVideo, Instant)>,
+    pending: VecDeque<QueuedHttpVideo>,
     seen: VecDeque<(String, Instant)>,
     cooldowns: VecDeque<(MediaCooldownId, Instant)>,
     rate: NotificationRate,
@@ -296,7 +311,7 @@ impl WorkerEntry {
         let now = Instant::now();
         state
             .pending
-            .retain(|(_, created)| now.duration_since(*created) < NOTIFICATION_DELIVERY_TTL);
+            .retain(|request| now < request.delivery_deadline());
         state
             .seen
             .retain(|(_, created)| now.duration_since(*created) < NOTIFICATION_DEDUP_TTL);
@@ -316,7 +331,7 @@ impl WorkerEntry {
                 state
                     .pending
                     .iter()
-                    .any(|(request, _)| request.camera_id.as_ref() == Some(camera))
+                    .any(|request| request.camera_id.as_ref() == Some(camera))
             })
             || state.rate.count >= NOTIFICATIONS_PER_WORKER_PER_MINUTE
         {
@@ -324,6 +339,7 @@ impl WorkerEntry {
         }
         state.rate.count += 1;
         let request = QueuedHttpVideo {
+            created: now,
             camera_id,
             live_preview: admission.live_preview,
             lease,
@@ -335,7 +351,7 @@ impl WorkerEntry {
         };
         state.seen.push_back((request.id.clone(), now));
         state.cooldowns.push_back((cooldown_id, now));
-        state.pending.push_back((request, now));
+        state.pending.push_back(request);
         true
     }
 
@@ -676,7 +692,7 @@ impl PluginHost {
                 .as_ref()
                 .map(GenerationLease::instance_id);
             let mut state = entry.http_videos.lock().unwrap_or_else(|e| e.into_inner());
-            while let Some((request, created)) = state.pending.pop_front() {
+            while let Some(request) = state.pending.pop_front() {
                 if !self.0.stopped.load(Ordering::Acquire)
                     && authority.enabled
                     && authority.epoch == entry.epoch
@@ -688,7 +704,7 @@ impl PluginHost {
                     && request.lease.epoch() == authority.epoch
                     && request.lease.plugin_id() == snapshot.plugin_id
                     && Some(request.lease.instance_id()) == instance
-                    && created.elapsed() < NOTIFICATION_DELIVERY_TTL
+                    && Instant::now() < request.delivery_deadline()
                 {
                     requests.push(request);
                 }

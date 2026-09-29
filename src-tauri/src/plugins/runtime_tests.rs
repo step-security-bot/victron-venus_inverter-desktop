@@ -2401,3 +2401,84 @@ async fn mqtt_live_is_native_scoped_with_camera_cooldown_and_no_toast_or_public_
         host.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn delayed_media_dispatch_drops_old_motion_without_shortening_completed_clip_delivery() {
+    let host = PluginHost::default();
+    let worker = live_spec("configuration");
+    let grant = worker.http_video.clone().unwrap();
+    host.start(worker).await.unwrap();
+    ready(&host).await;
+    let entry = host.entry(TEST_PLUGIN).unwrap();
+    {
+        let _authority = entry.authority.lock().unwrap();
+        for (id, live_preview) in [("stale-motion", true), ("completed-clip", false)] {
+            assert!(entry.queue_http_video(
+                &grant,
+                id.into(),
+                if live_preview {
+                    "https://video.test/base/api/front?fps=2&height=360".into()
+                } else {
+                    "https://video.test/base/api/events/front/clip.mp4".into()
+                },
+                "Front camera".into(),
+                MediaAdmission {
+                    kind: HttpMediaKind::Video,
+                    cooldown_id: Some(id.into()),
+                    live_preview,
+                },
+            ));
+        }
+        for request in &mut entry.http_videos.lock().unwrap().pending {
+            request.created -= Duration::from_secs(4);
+        }
+    }
+    let requests = host.take_http_video_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].id, "completed-clip");
+    assert!(!host.has_pending_http_videos());
+    assert!(!host.has_pending_notifications());
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn expired_motion_does_not_fill_the_runtime_queue_for_fresh_cameras() {
+    let host = PluginHost::default();
+    let worker = live_spec("configuration");
+    let grant = worker.http_video.clone().unwrap();
+    host.start(worker).await.unwrap();
+    ready(&host).await;
+    let entry = host.entry(TEST_PLUGIN).unwrap();
+    {
+        let _authority = entry.authority.lock().unwrap();
+        let enqueue = |index| {
+            entry.queue_http_video(
+                &grant,
+                format!("motion-{index}"),
+                format!("https://video.test/base/api/camera-{index}?fps=2&height=360"),
+                "Camera".into(),
+                MediaAdmission {
+                    kind: HttpMediaKind::Video,
+                    cooldown_id: None,
+                    live_preview: true,
+                },
+            )
+        };
+        for index in 0..HTTP_VIDEO_QUEUE_CAPACITY {
+            assert!(enqueue(index));
+        }
+        assert!(!enqueue(HTTP_VIDEO_QUEUE_CAPACITY));
+        for request in &mut entry.http_videos.lock().unwrap().pending {
+            request.created -= LIVE_PREVIEW_DELIVERY_TTL;
+        }
+        assert!(enqueue(HTTP_VIDEO_QUEUE_CAPACITY));
+    }
+    let requests = host.take_http_video_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].id,
+        format!("motion-{HTTP_VIDEO_QUEUE_CAPACITY}")
+    );
+    assert!(!host.has_pending_notifications());
+    host.shutdown().await;
+}

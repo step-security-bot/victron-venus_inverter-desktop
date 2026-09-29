@@ -310,11 +310,56 @@ fn write_failure_is_reported_without_the_underlying_error_contents() {
         .try_send(Outbound {
             bytes: b"{}\n".to_vec(),
             written,
+            expires_at: None,
         })
         .ok()
         .unwrap();
     write_frames(FailingWriter, outgoing);
     assert_eq!(result.blocking_recv().unwrap(), Err("host output closed"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn expired_preview_behind_blocked_output_is_discarded_without_expiring_other_traffic() {
+    for kind in ["live_view", "mqtt_live", "http_live"] {
+        let (flushed, mut pending) = mpsc::channel(2);
+        let output = Output::with_writer(ControlledWriter {
+            bytes: Vec::new(),
+            flushed,
+        });
+        // Block a prior frame's flush, leaving both following frames in the
+        // bounded queue. An already-expired deadline avoids wall-clock sleeps.
+        assert!(output.try_send(json!({"type":"contributions"})).unwrap());
+        let blocked = tokio::time::timeout(Duration::from_secs(2), pending.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(output
+            .try_send_before(
+                json!({"type":kind,"id":"expired","url":"https://fixture.invalid/?token=private"}),
+                Instant::now(),
+            )
+            .unwrap());
+        let clip = json!({"type":"http_video","id":"clip"});
+        assert!(output.try_send(clip.clone()).unwrap());
+        assert!(!output.try_send(json!({"type":"notification"})).unwrap());
+        blocked.release.send(Ok(())).unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(2), pending.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&next.bytes).unwrap(), clip);
+        next.release.send(Ok(())).unwrap();
+        let fresh = json!({"type":kind,"id":"fresh"});
+        assert!(output
+            .try_send_before(fresh.clone(), Instant::now() + Duration::from_secs(60))
+            .unwrap());
+        let next = tokio::time::timeout(Duration::from_secs(2), pending.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&next.bytes).unwrap(), fresh);
+        next.release.send(Ok(())).unwrap();
+    }
 }
 
 #[test]

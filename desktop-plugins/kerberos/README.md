@@ -1,6 +1,6 @@
 # Kerberos desktop worker
 
-`inverter-desktop.kerberos` version 0.3.0 requires desktop host API 1.9. It is independently installable and does not require Frigate or Home Assistant. Android and iOS builds reject this package at build time.
+`inverter-desktop.kerberos` version 0.3.1 requires desktop host API 1.9. It is independently installable and does not require Frigate or Home Assistant. Android and iOS builds reject this package at build time.
 
 The worker subscribes to native Agent motion topics. The default filters are `kerberos/agent/+;kerberos/hub/+`; custom filters may replace the final identity with an exact ID. The broker host, port, TLS setting and write-only username/password belong to this plugin. No core MQTT or HA credentials are inherited.
 
@@ -58,6 +58,11 @@ cooldown is keyed by camera ID, survives MQTT reconnects in the worker, and
 cannot be bypassed by rotating the token. A duplicate never extends the current
 window. Existing native Kerberos Agent/Hub handling is unchanged. No stream is
 opened at startup, during reconnect, or just because an endpoint is configured.
+
+Both MQTT URL and mapped legacy previews expire after three seconds while queued
+for host output, starting at MQTT receipt. Expired queued frames are discarded
+before writing. A blocking pipe write already in progress cannot be interrupted
+by this check; the host independently bounds its native queues after receipt.
 
 The publisher must send QoS 0, non-retained events for actual motion transitions.
 Plain URLs carry no event timestamp: the consumer can reject retained delivery

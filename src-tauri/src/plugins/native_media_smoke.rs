@@ -590,6 +590,7 @@ fn submit(
     state.leases.lock().unwrap().push(lease.clone());
     media
         .try_submit(QueuedHttpVideo {
+            created: tokio::time::Instant::now(),
             camera_id: Some(MediaCameraId::Explicit(format!("clip-{sequence}"))),
             live_preview: false,
             media_kind: HttpMediaKind::Video,
@@ -704,6 +705,7 @@ async fn exercise_live(
         let started = tokio::time::Instant::now();
         media
             .try_submit(QueuedHttpVideo {
+                created: tokio::time::Instant::now(),
                 camera_id: Some(MediaCameraId::Explicit("front".into())),
                 live_preview: true,
                 media_kind: HttpMediaKind::Video,
@@ -729,6 +731,7 @@ async fn exercise_live(
         if duplicate_during_loading {
             media
                 .try_submit(QueuedHttpVideo {
+                    created: tokio::time::Instant::now(),
                     camera_id: Some(MediaCameraId::Explicit("front".into())),
                     live_preview: true,
                     media_kind: HttpMediaKind::Video,
@@ -925,6 +928,7 @@ async fn exercise_live(
             let _peer_owner = RevokeOnDrop(peer_lease.clone());
             media
                 .try_submit(QueuedHttpVideo {
+                    created: tokio::time::Instant::now(),
                     camera_id: Some(MediaCameraId::Explicit("peer".into())),
                     live_preview: true,
                     media_kind: HttpMediaKind::Video,

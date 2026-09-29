@@ -6,10 +6,38 @@ import test from 'node:test'
 import { build } from 'vite'
 import {
   assertCoreModuleGraph,
+  assertLightweightDesktopEntry,
   assertMobileModuleGraph,
   frontendProfileAudit,
   resolveFrontendProfile,
+  staticEntryModules,
 } from './frontend-profile.mjs'
+
+test('camera startup follows static shared chunks without loading dynamic pages', () => {
+  const chunk = (fileName, modules, imports = [], dynamicImports = [], isEntry = false) => ({
+    type: 'chunk',
+    fileName,
+    modules: Object.fromEntries(modules.map((id) => [id, {}])),
+    imports,
+    dynamicImports,
+    isEntry,
+  })
+  const bundle = {
+    'entry.js': chunk('entry.js', ['src/main.ts'], ['shared.js'], ['dashboard.js'], true),
+    'shared.js': chunk('shared.js', ['src/components/AuthGate.vue'], ['entry.js', 'vue.js']),
+    'vue.js': chunk('vue.js', ['node_modules/@vue/runtime-core/index.js']),
+    'dashboard.js': chunk('dashboard.js', ['src/App.vue'], ['charts.js']),
+    'charts.js': chunk('charts.js', ['node_modules/echarts/lib/core.js']),
+  }
+  assert.doesNotThrow(() => assertLightweightDesktopEntry(staticEntryModules(bundle)))
+  // A vendor group accidentally capturing Vue and ECharts makes charts an
+  // eager dependency even though the dashboard route itself stays lazy.
+  bundle['vue.js'].imports.push('charts.js')
+  assert.throws(() => assertLightweightDesktopEntry(staticEntryModules(bundle)), /echarts/)
+  bundle['vue.js'].imports = []
+  bundle['entry.js'].imports.push('dashboard.js')
+  assert.throws(() => assertLightweightDesktopEntry(staticEntryModules(bundle)), /src\/App.vue/)
+})
 
 test('native mobile targets cannot select desktop assets, including armv7 Android', () => {
   for (const platform of ['android', 'androideabi', 'ios']) {

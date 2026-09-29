@@ -191,7 +191,14 @@ pub async fn run<P: Provider>(
                             &mut media_budget
                         };
                         if budget.take(now) {
-                            let _ = output.try_send(frame)?;
+                            if matches!(frame["type"].as_str(), Some("live_view" | "mqtt_live")) {
+                                // A camera preview must not become fresh again
+                                // after waiting behind a blocked host pipe.
+                                let _ =
+                                    output.try_send_before(frame, now + Duration::from_secs(3))?;
+                            } else {
+                                let _ = output.try_send(frame)?;
+                            }
                         }
                     }
                 }

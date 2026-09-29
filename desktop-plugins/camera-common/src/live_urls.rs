@@ -82,8 +82,10 @@ impl CameraLiveUrls {
             return Err(ERROR);
         }
         let endpoint = self.endpoints.get(id).ok_or(ERROR)?;
-        let prefix = format!("{endpoint}?token=");
-        let token = value.strip_prefix(&prefix).ok_or(ERROR)?;
+        let token = value
+            .strip_prefix(endpoint.as_str())
+            .and_then(|suffix| suffix.strip_prefix("?token="))
+            .ok_or(ERROR)?;
         if token.is_empty()
             || token.len() > 512
             || !token

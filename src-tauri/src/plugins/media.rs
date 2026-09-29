@@ -133,6 +133,11 @@ struct Inner {
     drain: tokio::sync::Mutex<()>,
 }
 
+struct LivePreviewTiming {
+    delivery_deadline: tokio::time::Instant,
+    duration: std::time::Duration,
+}
+
 #[derive(Clone)]
 pub(crate) struct MediaService(Arc<Inner>);
 
@@ -215,6 +220,16 @@ impl MediaService {
             (request.grant.validate_url(&request.url), None)
         };
         let url = url.map_err(|_| MediaError::InvalidRequest)?;
+        let preview_timing = preview_duration.map(|duration| LivePreviewTiming {
+            delivery_deadline: request.delivery_deadline(),
+            duration,
+        });
+        if preview_timing
+            .as_ref()
+            .is_some_and(|timing| tokio::time::Instant::now() >= timing.delivery_deadline)
+        {
+            return Ok(());
+        }
         let mut tasks = self.0.tasks.lock().unwrap_or_else(|e| e.into_inner());
         if self.0.closing.load(Ordering::Acquire) || self.0.cleanup_failed.load(Ordering::Acquire) {
             return Err(MediaError::Unavailable);
@@ -278,9 +293,9 @@ impl MediaService {
         tasks.retain(|task| !task.is_finished());
         let service = self.clone();
         tasks.push(tokio::spawn(async move {
-            if let Some(duration) = preview_duration {
+            if let Some(timing) = preview_timing {
                 service
-                    .own_live(id, request.lease, request.title, url, receiver, duration)
+                    .own_live(id, request.lease, request.title, url, receiver, timing)
                     .await;
             } else {
                 service
@@ -411,8 +426,9 @@ impl MediaService {
         id: &str,
         lease: &GenerationLease,
         retired: &mut watch::Receiver<bool>,
-        preview: bool,
+        preview_deadline: Option<tokio::time::Instant>,
     ) -> bool {
+        let preview = preview_deadline.is_some();
         let mut shutdown = self.0.shutdown.subscribe();
         loop {
             let changed = self.0.changed.notified();
@@ -422,6 +438,7 @@ impl MediaService {
                 || *retired.borrow()
                 || *shutdown.borrow()
                 || self.0.cleanup_failed.load(Ordering::Acquire)
+                || preview_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
             {
                 return false;
             }
@@ -485,7 +502,7 @@ impl MediaService {
         source: (reqwest::Url, Option<String>),
         mut retired: watch::Receiver<bool>,
     ) {
-        if !self.reserve(&id, &lease, &mut retired, false).await {
+        if !self.reserve(&id, &lease, &mut retired, None).await {
             self.remove_item(&id).await;
             return;
         }
@@ -564,13 +581,16 @@ impl MediaService {
         title: String,
         url: reqwest::Url,
         mut retired: watch::Receiver<bool>,
-        duration: std::time::Duration,
+        timing: LivePreviewTiming,
     ) {
         // Motion expires while waiting for a shared window. A preview reserves
         // no transfer capacity, file, or disk bytes; the webview owns its stream.
-        if !tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            self.reserve(&id, &lease, &mut retired, true),
+        // Keep the original runtime deadline; a delayed dispatch or task start
+        // must not renew the motion's queue budget. reserve also checks it
+        // before claiming capacity, since timeout_at polls its future first.
+        if !tokio::time::timeout_at(
+            timing.delivery_deadline,
+            self.reserve(&id, &lease, &mut retired, Some(timing.delivery_deadline)),
         )
         .await
         .unwrap_or(false)
@@ -596,7 +616,7 @@ impl MediaService {
             media_kind: HttpMediaKind::Video,
             error: None,
         });
-        self.present_until_retired(id, lease, label, retired, ready, Some(duration))
+        self.present_until_retired(id, lease, label, retired, ready, Some(timing.duration))
             .await;
     }
 

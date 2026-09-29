@@ -1,10 +1,7 @@
-import { createApp, h, type Component } from 'vue'
+import { createApp, defineAsyncComponent, h, type Component } from 'vue'
 import AuthGate from './components/AuthGate.vue'
-import About from './About.vue'
-import App from './App.vue'
+import ErrorBoundary from './components/ErrorBoundary.vue'
 import { getFeatureView, isMobileApp } from '@features'
-import MobileShell from './MobileShell.vue'
-import Config from './Config.vue'
 import { i18n } from './i18n'
 
 import { logger } from './logger'
@@ -18,16 +15,22 @@ const isAboutWindow = path === '/about'
 
 let rootComponent: Component
 if (isMobileApp) {
-  rootComponent = MobileShell
+  rootComponent = defineAsyncComponent(() => import('./MobileShell.vue'))
 } else if (isConfigWindow) {
-  rootComponent = Config
+  rootComponent = defineAsyncComponent(() => import('./Config.vue'))
 } else if (isAboutWindow) {
-  rootComponent = About
+  rootComponent = defineAsyncComponent(() => import('./About.vue'))
 } else {
-  rootComponent = getFeatureView(path) ?? App
+  // Temporary media windows should not load dashboard charts or configuration.
+  rootComponent = getFeatureView(path) ?? defineAsyncComponent(() => import('./App.vue'))
 }
 
-const app = createApp({ render: () => h(AuthGate, null, { default: () => h(rootComponent) }) })
+const app = createApp({
+  render: () =>
+    h(AuthGate, null, {
+      default: () => h(ErrorBoundary, null, { default: () => h(rootComponent) }),
+    }),
+})
 app.use(i18n)
 app.config.errorHandler = (err, instance, info) => {
   logger.error('Unhandled Vue error:', err, 'Component:', instance, 'Info:', info)

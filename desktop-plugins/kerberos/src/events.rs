@@ -47,13 +47,20 @@ impl Events {
             return None;
         }
         let camera = topic.strip_prefix(inverter_camera_common::live_urls::TOPIC_PREFIX)?;
+        // No event for an active camera can open another preview. Reject the
+        // duplicate before parsing its URL or sweeping the other cameras; token
+        // rotation and invalid repeats must not extend the original cooldown.
+        if self
+            .mqtt_seen
+            .get(camera)
+            .is_some_and(|last| now.saturating_duration_since(*last) < SILENCE)
+        {
+            return None;
+        }
         let value = std::str::from_utf8(payload).ok()?;
         let url = self.mqtt_urls.resolve(camera, value).ok()?;
         self.mqtt_seen
             .retain(|_, last| now.saturating_duration_since(*last) < SILENCE);
-        if self.mqtt_seen.contains_key(camera) {
-            return None;
-        }
         self.mqtt_seen.insert(camera.into(), now);
         let name = self
             .labels
@@ -478,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn mqtt_live_validates_before_cooldown_and_token_rotation_does_not_extend_preview() {
+    fn mqtt_live_validates_before_admission_and_token_rotation_does_not_extend_preview() {
         let endpoint = "https://ha.invalid/api/camera_proxy_stream/camera.front";
         let config: Configuration = serde_json::from_value(json!({
             "revision":"fixture", "values":{"mqtt_host":"localhost", "camera_labels":r#"{"front":"Entrance"}"#,
@@ -529,6 +536,60 @@ mod tests {
         assert_ne!(first[0]["id"], next[0]["id"]);
         assert_eq!(next[0]["url"], rotated);
         assert_eq!(events.mqtt_seen.len(), 1);
+    }
+
+    #[test]
+    fn mqtt_live_duplicate_bursts_preserve_camera_specific_cooldown_boundaries() {
+        let endpoint = "https://ha.invalid/api/camera_proxy_stream/camera.front";
+        let config: Configuration = serde_json::from_value(json!({
+            "revision":"fixture", "values":{"mqtt_host":"localhost",
+            "mqtt_live_endpoints":json!({"front":endpoint,"back":endpoint}).to_string()},
+            "secrets":{}
+        }))
+        .unwrap();
+        let mut events = Events::new(&config).unwrap();
+        let start = Instant::now();
+        let topic = "homelab/cameras/live/front";
+        let first = events.frames(
+            topic,
+            format!("{endpoint}?token=first").as_bytes(),
+            false,
+            start,
+            0,
+        );
+        assert_eq!(first.len(), 1);
+        let before_expiry = start + SILENCE - Duration::from_nanos(1);
+        for index in 0..512 {
+            let rotated = format!("{endpoint}?token=rotated_{index}");
+            for payload in [rotated.as_bytes(), b"invalid", &[0xff]] {
+                assert!(events
+                    .frames(topic, payload, false, before_expiry, 0)
+                    .is_empty());
+            }
+        }
+        // Sharing an endpoint does not merge distinct camera cooldowns.
+        let fresh = format!("{endpoint}?token=current");
+        let back = events.frames(
+            "homelab/cameras/live/back",
+            fresh.as_bytes(),
+            false,
+            before_expiry,
+            0,
+        );
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0]["camera_id"], "back");
+        // At expiry, invalid and retained events still cannot consume admission.
+        let expiry = start + SILENCE;
+        assert!(events
+            .frames(topic, b"invalid", false, expiry, 0)
+            .is_empty());
+        assert!(events
+            .frames(topic, fresh.as_bytes(), true, expiry, 0)
+            .is_empty());
+        let next = events.frames(topic, fresh.as_bytes(), false, expiry, 0);
+        assert_eq!(next.len(), 1);
+        assert_ne!(next[0]["id"], first[0]["id"]);
+        assert_eq!(next[0]["url"], fresh);
     }
 
     #[test]
