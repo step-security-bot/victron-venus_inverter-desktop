@@ -19,6 +19,11 @@ updates:
       codeql:
         patterns:
           - github/codeql-action/*
+      toolkit-automation:
+        applies-to: version-updates
+        patterns:
+          - victron-venus/venus-os-ci-toolkit/.github/workflows/auto-approve-reusable.yml
+          - victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml
   - package-ecosystem: docker
     directory: /
     schedule:
