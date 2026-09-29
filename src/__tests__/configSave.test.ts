@@ -1,4 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { effectScope } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Config from '../Config.vue'
 import { useConfigForm } from '../composables/useConfigForm'
@@ -27,6 +28,63 @@ afterEach(() => {
 })
 
 describe('Configuration save result', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'ignores a superseded config read that later %s instead of overwriting current sections or messages',
+    async (outcome) => {
+      let resolveOld!: (config: typeof defaultConfig) => void
+      let rejectOld!: (error: Error) => void
+      boundary.invoke.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            resolveOld = resolve
+            rejectOld = reject
+          })
+      )
+      const form = useConfigForm()
+      const oldRead = form.loadConfig()
+      boundary.invoke.mockResolvedValueOnce({
+        ...defaultConfig,
+        mqtt_host: 'restored-host',
+        color_scheme: 'light',
+        show_active_loads: true,
+      })
+      expect(await form.loadConfig()).toBe(form.config)
+      form.message.value = 'Newest operation result'
+      if (outcome === 'resolve') resolveOld({ ...defaultConfig, mqtt_host: 'outdated-host' })
+      else rejectOld(new Error('Old load failed'))
+      expect(await oldRead).toBeNull()
+      expect(form.config).toMatchObject({
+        mqtt_host: 'restored-host',
+        color_scheme: 'light',
+        show_active_loads: true,
+      })
+      expect(form.configLoaded.value).toBe(true)
+      expect(form.message.value).toBe('Newest operation result')
+    }
+  )
+
+  it('discards an in-flight config read when its component scope is disposed', async () => {
+    let resolveRead!: (config: typeof defaultConfig) => void
+    boundary.invoke.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRead = resolve
+        })
+    )
+    const scope = effectScope()
+    const form = scope.run(useConfigForm)
+    if (!form) throw new Error('Config scope was not active')
+    const reading = form.loadConfig()
+    scope.stop()
+    resolveRead({ ...defaultConfig, mqtt_host: 'late-host' })
+    expect(await reading).toBeNull()
+    expect(form.config.mqtt_host).toBe(defaultConfig.mqtt_host)
+    expect(form.configLoaded.value).toBe(false)
+    boundary.invoke.mockClear()
+    expect(await form.loadConfig()).toBeNull()
+    expect(boundary.invoke).not.toHaveBeenCalled()
+  })
+
   it('preserves public opaque module schemas during core load, reset and save', async () => {
     const modules = {
       'example.future': {

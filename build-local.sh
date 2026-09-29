@@ -45,26 +45,22 @@ echo "===> Building Tauri application..."
 # This script installs the macOS app directly; disk images are release artifacts.
 pnpm run tauri build --bundles app --verbose
 
-echo "===> Killing running instances of '${APP_NAME}'..."
-pkill -f "${APP_NAME}" 2>/dev/null && echo "  ✓ Killed" || echo "  (not running)"
+echo ""
+echo "===> Installing ${APP_NAME} to /Applications..."
+APP_BUNDLE="${BUNDLE_DIR}/macos/${APP_NAME}.app"
+if [ -d "$APP_BUNDLE" ]; then
+  python3 scripts/macos_app.py "$APP_BUNDLE"
+  echo "  ✓ Installed to /Applications/${APP_NAME}.app"
+else
+  echo "  ✗ Bundle not found at ${APP_BUNDLE}"
+  exit 1
+fi
 
 BUNDLE_ID="com.alvit.inverter-dashboard"
 echo ""
 echo "===> Clearing WKWebView NetworkCache..."
 rm -rf "$HOME/Library/Caches/${BUNDLE_ID}/WebKit/NetworkCache"
 echo "  ✓ $HOME/Library/Caches/${BUNDLE_ID}/WebKit/NetworkCache"
-
-echo ""
-echo "===> Installing ${APP_NAME} to /Applications..."
-APP_BUNDLE="${BUNDLE_DIR}/macos/${APP_NAME}.app"
-if [ -d "$APP_BUNDLE" ]; then
-  rm -rf "/Applications/${APP_NAME}.app"
-  cp -R "$APP_BUNDLE" "/Applications/${APP_NAME}.app"
-  echo "  ✓ Installed to /Applications/${APP_NAME}.app"
-else
-  echo "  ✗ Bundle not found at ${APP_BUNDLE}"
-  exit 1
-fi
 
 echo ""
 echo "===> Installing the matching local plugin artifacts..."

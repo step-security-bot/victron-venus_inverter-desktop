@@ -1,6 +1,0 @@
-config:
-  github:owner: victron-venus
-  inverter-desktop-infra:cargoRegistryToken:
-    secure: AAABAB/vplGAz6wV1nh5tg5XG3wpUxVLlA8vmHKbs+Jz8/ybD11n3d6UeaufCYBO7OAbyt42yXX3E+KTXWVyi0c=
-  github:token:
-    secure: AAABAD7AWY4L4nsrrI0ndW6sE0gZL2vMDXNzKT/0SIaUFeFmo6w0pe249gl0tGRXgNMMtohqwAOGKoiqr0P50mxiWbJfbs32CvQTzvSa9c0GwWpQlnCFl6AmGWLTllOvDNDrv926/MuW5HIdOILTzaZNInq/XyXTXCuTUhU=

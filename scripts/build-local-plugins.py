@@ -22,10 +22,10 @@ import tomllib
 import uuid
 from pathlib import Path
 
+from macos_app import APP, restart_app
 from plugins import plugin_package
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = Path('/Applications/Inverter Desktop.app')
 SELECTION = 'local-plugin-overrides.json'
 
 
@@ -226,21 +226,6 @@ def stage_install(artifacts, app_data, target):
         shutil.rmtree(destination)
         raise
     return {p['plugin_id']: p['sha256'] for p in packages}
-
-
-def restart_app():
-    """Only target the installed app's executable, never unrelated dev builds."""
-    executable = str(APP / 'Contents/MacOS/inverter-dashboard')
-    pattern = '^' + re.escape(executable) + '( |$)'
-    result = subprocess.run(['pkill', '-TERM', '-f', pattern], check=False)
-    if result.returncode not in (0, 1):
-        raise ValueError('Could not stop the installed desktop app')
-    deadline = time.monotonic() + 15
-    while subprocess.run(['pgrep', '-f', pattern], stdout=subprocess.DEVNULL, check=False).returncode == 0:
-        if time.monotonic() >= deadline:
-            raise ValueError('Desktop app did not stop; close it and retry')
-        time.sleep(0.25)
-    subprocess.run(['open', str(APP)], check=True)
 
 
 def wait_installed(app_data, expected, timeout=90):

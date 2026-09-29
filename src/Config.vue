@@ -705,7 +705,26 @@ function ingestDiscovered(list: DiscoveredInst[] | null | undefined) {
 
 let unlistenMqttState: UnlistenFn | null = null
 let unlistenFeatures: (() => void) | null = null
+let featureSubscription: Promise<void> | null = null
 let disposed = false
+
+function ensureFeatureSubscription(): Promise<void> {
+  if (disposed || unlistenFeatures) return Promise.resolve()
+  // Restoring updates this same reactive config object. Keep one subscription,
+  // including when a restore overlaps startup's pending registration.
+  featureSubscription ??= (async () => {
+    try {
+      const stop = await subscribeFeatureConfig(config, () => !disposed)
+      if (disposed) stop()
+      else unlistenFeatures = stop
+    } catch {
+      if (!disposed) logger.warn('Optional settings updates are unavailable')
+    } finally {
+      featureSubscription = null
+    }
+  })()
+  return featureSubscription
+}
 
 const sections = computed(() => [
   { id: 'mqtt', label: 'MQTT Broker', icon: Wifi },
@@ -810,20 +829,15 @@ async function handleBackup() {
 async function handleRestore() {
   if (backupBusy.value) return
   backupBusy.value = true
+  let reportResult = false
   try {
     const done = await invoke<boolean>('restore_config')
+    if (disposed) return
     if (done) {
       const cfg = await loadConfig()
-      try {
-        const stop = await subscribeFeatureConfig(config, () => !disposed)
-        if (disposed) {
-          stop()
-          return
-        }
-        unlistenFeatures = stop
-      } catch {
-        logger.warn('Optional settings updates are unavailable')
-      }
+      if (!cfg || disposed) return
+      await ensureFeatureSubscription()
+      if (disposed) return
       applyTheme(cfg.color_scheme)
       await emit('config-saved', { color_scheme: cfg.color_scheme })
       message.value = 'Configuration loaded'
@@ -832,12 +846,15 @@ async function handleRestore() {
       message.value = 'Load cancelled'
       messageType.value = 'info'
     }
+    reportResult = true
   } catch (e) {
+    if (disposed) return
     message.value = `Restore failed: ${e?.toString() || e}`
     messageType.value = 'error'
+    reportResult = true
   } finally {
     backupBusy.value = false
-    setTimeout(clearMessage, 3000)
+    if (!disposed && reportResult) setTimeout(clearMessage, 3000)
   }
 }
 
@@ -909,18 +926,11 @@ onMounted(async () => {
     globalThis.addEventListener('keydown', handleKeyDown)
     const cfg = await loadConfig()
     if (disposed) return
-    try {
-      const stop = await subscribeFeatureConfig(config, () => !disposed)
-      if (disposed) {
-        stop()
-        return
-      }
-      unlistenFeatures = stop
-    } catch {
-      logger.warn('Optional settings updates are unavailable')
-    }
-    // Re-apply after loading to be absolutely sure
-    applyTheme(cfg.color_scheme)
+    await ensureFeatureSubscription()
+    if (disposed) return
+    // A restore can supersede the startup read. Still initialize discovery,
+    // without applying theme or data from that cancelled read.
+    if (cfg) applyTheme(cfg.color_scheme)
     try {
       const st = await invoke<InverterState>('get_state')
       if (disposed) return

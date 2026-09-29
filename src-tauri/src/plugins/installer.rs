@@ -116,6 +116,8 @@ struct ManagerInner {
     owned: Mutex<BTreeMap<String, String>>,
     closed: AtomicBool,
     configuration: Option<ConfigurationLoader>,
+    #[cfg(test)]
+    verifications: std::sync::atomic::AtomicUsize,
 }
 
 struct CleanupLease(Option<File>);
@@ -238,6 +240,8 @@ impl PackageManager {
             owned: Mutex::new(BTreeMap::new()),
             closed: AtomicBool::new(false),
             configuration,
+            #[cfg(test)]
+            verifications: std::sync::atomic::AtomicUsize::new(0),
         }));
         let state = manager.read_state()?;
         manager.recover(&state)?;
@@ -254,12 +258,37 @@ impl PackageManager {
         &self,
         epoch: u64,
     ) -> Result<Vec<InstalledPluginDetails>, String> {
+        self.inspect_details_in_epoch(None, epoch).await
+    }
+
+    /// Reconciliation needs one package, not another verification of every
+    /// installed archive and extracted payload for each configured plugin.
+    pub(crate) async fn details_in_epoch(
+        &self,
+        id: &str,
+        epoch: u64,
+    ) -> Result<Option<InstalledPluginDetails>, String> {
+        validate_plugin_id(id)?;
+        Ok(self
+            .inspect_details_in_epoch(Some(id.to_owned()), epoch)
+            .await?
+            .pop())
+    }
+
+    async fn inspect_details_in_epoch(
+        &self,
+        id: Option<String>,
+        epoch: u64,
+    ) -> Result<Vec<InstalledPluginDetails>, String> {
         let manager = self.clone();
         tokio::spawn(async move {
             let _operation = manager.0.operation.lock().await;
             manager.check_epoch(epoch)?;
             let mut details = Vec::new();
             for record in manager.read_state()?.plugins.into_values() {
+                if id.as_ref().is_some_and(|id| *id != record.plugin_id) {
+                    continue;
+                }
                 let (manifest, error) =
                     match manager.verify_installed(&record.plugin_id, &record.active) {
                         Ok(package) => (Some(package.manifest().clone()), None),
@@ -1158,6 +1187,8 @@ impl PackageManager {
         id: &str,
         version: &PackageVersion,
     ) -> Result<VerifiedPackage, String> {
+        #[cfg(test)]
+        self.0.verifications.fetch_add(1, Ordering::Relaxed);
         validate_plugin_id(id)?;
         validate_version(version)?;
         let content = self.0.root.join("content");

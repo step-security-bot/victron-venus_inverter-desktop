@@ -1829,11 +1829,37 @@ async fn installed_details_keep_corrupt_and_untrusted_records_visible_and_remova
         fs::set_permissions(&archive, fs::Permissions::from_mode(0o600)).unwrap();
     }
     fs::write(archive, b"corrupt").unwrap();
+    let epoch = host.authority_epoch();
+    manager.0.verifications.store(0, Ordering::Relaxed);
+    let valid = manager
+        .details_in_epoch(OTHER, epoch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(valid.manifest.as_ref().unwrap().plugin_id, OTHER);
+    assert!(valid.error.is_none());
+    assert_eq!(manager.0.verifications.load(Ordering::Relaxed), 1);
+    let damaged = manager
+        .details_in_epoch(PLUGIN, epoch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(damaged.manifest.is_none());
+    assert!(damaged.error.is_some());
+    assert_eq!(manager.0.verifications.load(Ordering::Relaxed), 2);
+    assert!(manager
+        .details_in_epoch("test.absent", epoch)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(manager.details_in_epoch("../invalid", epoch).await.is_err());
+    assert_eq!(manager.0.verifications.load(Ordering::Relaxed), 2);
     let details = manager
         .list_details_in_epoch(host.authority_epoch())
         .await
         .unwrap();
     assert_eq!(details.len(), 2);
+    assert_eq!(manager.0.verifications.load(Ordering::Relaxed), 4);
     let damaged = details
         .iter()
         .find(|item| item.record.plugin_id == PLUGIN)
@@ -1902,6 +1928,7 @@ async fn explicit_epoch_operations_reject_a_review_from_before_logout_and_relogi
     assert!(manager.rollback_in_epoch(PLUGIN, epoch).await.is_err());
     assert!(manager.remove_in_epoch(PLUGIN, epoch).await.is_err());
     assert!(manager.list_details_in_epoch(epoch).await.is_err());
+    assert!(manager.details_in_epoch(PLUGIN, epoch).await.is_err());
     assert!(manager.restore_enabled_in_epoch(epoch).await.is_err());
     assert_eq!(manager.list().await.unwrap(), vec![original]);
     assert!(host.snapshots().is_empty());

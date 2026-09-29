@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { reactive, ref } from 'vue'
+import { getCurrentScope, onScopeDispose, reactive, ref } from 'vue'
 import type { AppConfig } from '../config'
 import { defaultConfig, normalizeConfig } from '../config'
 
@@ -9,16 +9,28 @@ export function useConfigForm() {
   const configLoaded = ref(false)
   const message = ref('')
   const messageType = ref<'success' | 'error' | 'info'>('info')
+  let active = true
+  let loadGeneration = 0
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      active = false
+      loadGeneration += 1
+    })
+  }
 
-  async function loadConfig() {
+  async function loadConfig(): Promise<AppConfig | null> {
+    if (!active) return null
+    const generation = ++loadGeneration
     configLoaded.value = false
     try {
       const loaded = await invoke<AppConfig>('get_config')
+      if (!active || generation !== loadGeneration) return null
       Object.assign(config, normalizeConfig(loaded))
       if (!config.color_scheme) config.color_scheme = 'dark'
       message.value = ''
       configLoaded.value = true
     } catch (e) {
+      if (!active || generation !== loadGeneration) return null
       message.value = `Failed to load config: ${e}`
       messageType.value = 'error'
       throw e

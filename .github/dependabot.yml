@@ -9,6 +9,18 @@ updates:
     directory: '/' # Location of package manifests
     schedule:
       interval: 'daily'
+    groups:
+      commitlint:
+        applies-to: version-updates
+        patterns:
+          - '@commitlint/*'
+    ignore:
+      # vue-tsc still requires the TypeScript 6 JavaScript compiler API.
+      # https://github.com/vuejs/language-tools/issues/5381#issuecomment-4950412322
+      # Remove after a stable supported Vue typechecking path passes both
+      # desktop and mobile builds. TypeScript 6 updates remain enabled.
+      - dependency-name: typescript
+        versions: ['7.x']
 
   - package-ecosystem: github-actions
     directory: /
@@ -26,10 +38,5 @@ updates:
           - victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml
   - package-ecosystem: cargo
     directory: /src-tauri
-    schedule:
-      interval: daily
-
-  - package-ecosystem: npm
-    directory: /infra
     schedule:
       interval: daily

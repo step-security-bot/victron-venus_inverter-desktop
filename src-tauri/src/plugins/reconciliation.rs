@@ -275,11 +275,7 @@ impl PackageApplication {
             .artifacts
             .get(&self.0.target)
             .ok_or("No configured archive is available for this desktop platform")?;
-        let details = manager
-            .list_details_in_epoch(epoch)
-            .await?
-            .into_iter()
-            .find(|details| details.record.plugin_id == *id);
+        let details = manager.details_in_epoch(id, epoch).await?;
         self.check_epoch(epoch)?;
         if let Some(details) = &details {
             if let Some(error) = &details.error {

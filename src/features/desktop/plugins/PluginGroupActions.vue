@@ -29,27 +29,46 @@ const available = ref(false)
 const busy = ref(new Set<string>())
 let active = false
 let generation = 0
-let revision = 0
 let authEpoch = 0
+let refreshRequested = false
+let refreshing: Promise<void> | undefined
 let listeners: Array<() => void> = []
-async function refresh() {
-  const current = ++revision
+async function readGroups() {
   const session = generation
+  const epoch = authEpoch
   try {
     const status = await invoke<{ unlocked: boolean }>('auth_status')
-    if (!active || generation !== session || current !== revision) return
+    if (!active || generation !== session || authEpoch !== epoch) return
     if (!status?.unlocked) {
       groups.value = []
       available.value = false
       return
     }
     const value = await invoke<PluginGroup[]>('get_plugin_groups')
-    if (!active || generation !== session || current !== revision) return
+    if (!active || generation !== session || authEpoch !== epoch) return
     groups.value = value
     available.value = true
   } catch {
-    if (active && generation === session && current === revision) available.value = false
+    if (active && generation === session && authEpoch === epoch) available.value = false
   }
+}
+async function drainRefreshes() {
+  try {
+    while (active && refreshRequested) {
+      refreshRequested = false
+      // Telemetry may outpace IPC. Apply each completed read and coalesce newer
+      // events into one follow-up; only an auth/lifecycle change invalidates it.
+      await readGroups()
+    }
+  } finally {
+    refreshing = undefined
+  }
+}
+function refresh(): Promise<void> {
+  if (!active) return Promise.resolve()
+  refreshRequested = true
+  refreshing ??= drainRefreshes()
+  return refreshing
 }
 async function toggle(group: PluginGroup) {
   if (!active || !available.value || busy.value.has(group.id)) return
@@ -80,7 +99,6 @@ onMounted(async () => {
           busy.value.clear()
           groups.value = []
           available.value = false
-          revision += 1
         }
         void refresh()
       })
@@ -98,6 +116,7 @@ onMounted(async () => {
 onUnmounted(() => {
   active = false
   generation += 1
+  refreshRequested = false
   for (const stop of listeners) stop()
   listeners = []
   groups.value = []
