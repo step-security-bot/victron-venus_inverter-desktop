@@ -220,4 +220,4 @@ jobs:
           path: |
             src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
             src-tauri/gen/android/app/build/outputs/bundle/universalRelease/*.aab
-    timeout-minutes: 30
+    timeout-minutes: 45
