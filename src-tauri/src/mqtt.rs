@@ -774,6 +774,9 @@ pub struct DailyStats {
     pub produced_yesterday: Option<f64>,
     pub produced_dollars: Option<f64>,
     pub grid_kwh: Option<f64>,
+    // Keep this optional telemetry envelope independent of the other daily statistics.
+    // The frontend validates its date, coverage and freshness before displaying counters.
+    pub grid_energy: Option<serde_json::Value>,
     pub battery_in: Option<f64>,
     pub battery_out: Option<f64>,
     pub battery_in_yesterday: Option<f64>,
@@ -2922,6 +2925,53 @@ impl MqttClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_daily_energy_survives_mqtt_and_gateway_and_clears_with_old_snapshots() {
+        let client = MqttClient::new("localhost".into(), 1883, None, None, "grid-day-test".into());
+        let energy = serde_json::json!({
+            "date":"2026-09-29", "time_zone":"America/Los_Angeles",
+            "import_kwh":12.34, "export_kwh":0.0,
+            "observed_at":1790697600.0, "started_at":1790665200.0,
+            "complete":true, "status":"complete", "reason":null,
+            "source":{"service":"com.victronenergy.grid.example",
+                "device_instance":40, "serial":"TEST-METER"}
+        });
+        // Invalid optional telemetry is assessed by the frontend; it must not
+        // discard unrelated solar/battery statistics during native decoding.
+        for value in [Some(energy), Some(serde_json::json!("invalid")), None] {
+            let mut daily = serde_json::json!({"produced_today":7.5, "grid_kwh":null});
+            if let Some(value) = &value {
+                daily["grid_energy"] = value.clone();
+            }
+            MqttClient::process_state_update(
+                serde_json::from_value(serde_json::json!({"daily_stats":daily})).unwrap(),
+                client.state.clone(),
+                None,
+                Arc::new(Mutex::new(NotificationState {
+                    high_consumption: AlertState::new(),
+                    low_water: AlertState::new(),
+                    high_solar: AlertState::new(),
+                    high_load: HashMap::new(),
+                })),
+                None,
+                Arc::new(Mutex::new(EvCache::default())),
+                &Arc::new(StateEmitter::new(false)),
+            );
+            let snapshot = serde_json::from_value(serde_json::json!({
+                "inverter":{"daily_stats":daily}
+            }))
+            .unwrap();
+            let gateway = crate::gateway::snapshot_to_state(&snapshot);
+            for state in [client.get_state(), gateway] {
+                let stats = state.daily_stats.unwrap();
+                assert_eq!(stats.produced_today, Some(7.5));
+                assert_eq!(stats.grid_energy, value);
+                let ipc = serde_json::to_value(stats).unwrap();
+                assert_eq!(ipc["grid_energy"], value.clone().unwrap_or_default());
+            }
+        }
+    }
 
     #[test]
     fn selected_backup_survives_cerbo_overlay_and_clears_unavailable_power() {

@@ -8,7 +8,8 @@ read-only dashboards display the controller tariff and expose no editing.
 In an updated desktop/mobile app, **Configuration → Electricity tariff** edits
 the shared plan immediately on inverter-control. Tariff editing, choosing a local
 plan and the interval energy viewer all live in Configuration. The dashboard
-contains only the estimated cost (when available) and current rate; hover for
+contains the estimated cost (when available), current rate and measured grid
+import/export in kWh; hover for
 the source, billing period and calculation details.
 Saving waits for a matching controller acknowledgement after atomic persistence;
 a stale revision, validation failure or disk error leaves the previous plan intact.
@@ -110,7 +111,7 @@ plan without a utility plan ID, cents are converted to currency/kWh explicitly.
 The tariff model and spreadsheet are shared with inverter-dashboard-vue; native
 application settings and the compact dashboard presentation are maintained here. Native controller transport lives
 only in the desktop/mobile build. Univer OSS packages are pinned to
-1.0.0; no paid import/export or server plugin is required. The heavy editor is a
+1.0.2; no paid import/export or server plugin is required. The heavy editor is a
 separate lazy chunk. JSON is the exchange format; XLSX is not part of this feature.
 The browser stores local overrides per origin; desktop additionally scopes them by
 portal ID (falling back to gateway or MQTT host). Settings use the saved connection
@@ -126,6 +127,27 @@ Validation covers rates, missing data, source metadata, separate scopes, storage
 failure, season changes, pending-cell preservation, short-month billing boundaries
 and local-time/DST selection. Run the existing frontend build and test
 commands after changing the mirrored files.
+
+## Daily grid import and export
+
+The daily statistics strip shows `Today ↓ import / ↑ export kWh` beside the
+current rate. These values come from `daily_stats.grid_energy` in
+inverter-control, using the selected physical Victron grid meter's aggregate
+`/Ac/Energy/Forward` and `/Ac/Energy/Reverse` counters. Home Assistant is not a
+source. Desktop never sums phase counters, integrates instantaneous power or
+substitutes the older `grid_kwh` field.
+
+The controller stores its counter baseline across restarts and uses the Cerbo
+installation's time zone. A first observation after midnight, a meter reset or
+an unverified day boundary starts partial coverage, labelled `Since HH:mm`.
+The app does not present that partial amount as a full-day total. A complete
+day requires a verified start-of-day baseline. Missing, invalid, stale (over
+90 seconds old) or previous-day readings display dashes, including when an
+older controller does not provide the new field. A measured zero remains zero.
+
+Update inverter-control to a version that provides this telemetry to enable
+the figures. The tooltip identifies the meter, date, time zone and coverage.
+These counters do not change the tariff or calculate a time-of-use daily cost.
 
 ## Measured interval energy cost
 

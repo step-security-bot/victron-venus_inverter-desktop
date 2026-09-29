@@ -5,7 +5,8 @@ import DailyStats from '../components/DailyStats.vue'
 import { newDraft, rateGrid, validatePlan } from '../tariffs/model'
 import { state } from '../composables/useInverterState'
 
-vi.mock('../composables/useInverterState', () => ({
+vi.mock('../composables/useInverterState', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../composables/useInverterState')>()),
   state: ref({}),
 }))
 
@@ -22,9 +23,37 @@ describe('DailyStats', () => {
     expect(wrapper.find('button').exists()).toBe(false)
     expect(wrapper.text()).toContain('2.00')
     expect(wrapper.text()).toContain('0.2000 USD/kWh')
+    expect(wrapper.get('.daily-grid-energy').text()).toContain('↓ — / ↑ — kWh')
     expect(wrapper.text()).not.toMatch(
       /Edit tariff|Set tariff|Interval energy|Use .*tariff|Billing period|Controller tariff/
     )
+    wrapper.unmount()
+  })
+  it('places direct daily import/export beside the tariff without deriving it from legacy grid_kwh', () => {
+    const observed = Date.now()
+    const date = new Date(observed).toISOString().slice(0, 10)
+    ;(state as ReturnType<typeof ref>).value = {
+      daily_stats: {
+        grid_kwh: 999,
+        grid_energy: {
+          date,
+          time_zone: 'UTC',
+          import_kwh: 1.25,
+          export_kwh: 0,
+          observed_at: observed / 1000,
+          started_at: Date.parse(`${date}T00:00:00Z`) / 1000,
+          complete: true,
+          status: 'complete',
+          source: { service: 'com.victronenergy.grid.meter', device_instance: 40 },
+        },
+      },
+      ui_config: { electricity_tariff: validatePlan({ ...newDraft(), rates: rateGrid(0.2) }) },
+    }
+    const wrapper = mount(DailyStats)
+    const energy = wrapper.get('.daily-grid-energy')
+    expect(energy.text()).toBe('Today↓ 1.25 / ↑ 0.00 kWh')
+    expect(energy.element.previousElementSibling?.classList.contains('tariff-cost')).toBe(true)
+    expect(energy.text()).not.toMatch(/999|USD|\$|HA/)
     wrapper.unmount()
   })
   it('breakdown parts add up to the headline total', async () => {

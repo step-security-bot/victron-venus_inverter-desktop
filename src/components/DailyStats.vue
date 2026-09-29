@@ -26,6 +26,7 @@
       :tariff-scope="tariffScope"
       :configured-tariff="state.ui_config?.electricity_tariff"
     />
+    <DailyGridEnergy :energy="ds.grid_energy" />
 
     <div v-if="hasBattery" class="daily-stat-group flex items-center gap-1.5 flex-1 min-w-fit">
       <div v-if="hasSolar || hasGrid" class="soft-divider"></div>
@@ -57,6 +58,7 @@ import { Zap, Battery as BatteryIcon } from '@lucide/vue'
 import { state } from '../composables/useInverterState'
 
 import TariffCost from '../tariffs/TariffCost.vue'
+import DailyGridEnergy from './DailyGridEnergy.vue'
 withDefaults(defineProps<{ tariffScope?: string }>(), {
   tariffScope: 'dashboard',
 })

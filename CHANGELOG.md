@@ -10,6 +10,9 @@ All notable changes to this project will be documented in this file.
 - Per-plugin always-on-top video windows, disabled by default, and exclusions for
   individual legacy camera sources.
 - Live Home Assistant camera previews from configured MQTT URL topics.
+- Daily grid import and export in kWh beside the current tariff, using the
+  controller's physical Victron meter readings. Partial days show their start
+  time, and unavailable or stale readings remain unknown.
 
 ### Fixed
 - Camera previews start with less repeated work and discard stale queued live-preview frames.
@@ -21,6 +24,8 @@ All notable changes to this project will be documented in this file.
   one and restore the previous bundle if replacement fails.
 - The tariff spreadsheet uses matching Univer 1.0.2 packages, fixing builds that
   mixed incompatible Facade types. Dependabot now updates the Univer family together.
+- The tariff in the daily statistics strip inherits the surrounding typography
+  and stays inline with the other values.
 
 ### Changed
 - Update Lucide icons and Prettier. Remove the unused direct Undici development

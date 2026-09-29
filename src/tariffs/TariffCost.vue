@@ -67,12 +67,15 @@ const money = (value: number) =>
     currency: plan.value?.currency ?? 'USD',
   }).format(value)
 </script>
-<style scoped>
+<style>
+/* HoverTip forwards this class to a fragment child without this component's scope attribute. */
 .tariff-cost {
   display: inline-flex;
   align-items: center;
   white-space: nowrap;
   gap: 4px;
-  font-size: 12px;
+  font-size: inherit;
+  line-height: inherit;
+  font-weight: inherit;
 }
 </style>

@@ -97,6 +97,8 @@ export interface InverterState {
     produced_yesterday?: number
     produced_dollars?: number
     grid_kwh?: number | null
+    /** Controller-owned meter counters; the presentation validates this optional wire payload. */
+    grid_energy?: unknown
     battery_in?: number
     battery_out?: number
     battery_in_yesterday?: number
