@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import version_plan
+from release_control import stream_identity
 
 
 def sha256(data: bytes) -> str:
@@ -94,8 +95,9 @@ def create_receipt(
         ):
             raise ValueError("Unsafe or duplicate package name")
         seen.add(path.name.casefold())
-        data = path.read_bytes()
-        packages.append({"name": path.name, "size": len(data), "sha256": sha256(data)})
+        with path.open("rb") as stream:
+            identity = stream_identity(stream)
+        packages.append({"name": path.name, **identity})
     if not packages:
         raise ValueError("Cannot attest an empty package directory")
     result = {**evidence, "artifacts": packages, "toolchain": capture_toolchain()}

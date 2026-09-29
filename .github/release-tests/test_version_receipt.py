@@ -103,6 +103,24 @@ class CurrentBuildInputsTests(unittest.TestCase):
         )
         self.assertEqual(verified[0]["name"], self.output.name)
 
+    def test_large_package_receipt_does_not_buffer_the_payload(self):
+        payload = b"package" * 400_000
+        (self.assets / "package.bin").write_bytes(payload)
+        with patch.object(
+            Path, "read_bytes", side_effect=AssertionError("Whole-file payload read")
+        ):
+            result = self.create()
+        self.assertEqual(
+            result["artifacts"],
+            [
+                {
+                    "name": "package.bin",
+                    "size": len(payload),
+                    "sha256": version_receipt.sha256(payload),
+                }
+            ],
+        )
+
     def test_dependency_change_after_sync_fails_without_a_receipt(self):
         current = json.loads(self.source.read_text(encoding="utf-8"))
         current["dependencies"]["example"] = "2.0.0"

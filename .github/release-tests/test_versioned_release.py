@@ -7,6 +7,8 @@
 
 # Fixture byte layouts and descriptive test names are intentional; cleanup uses unittest.
 # pylint: disable=missing-function-docstring,missing-class-docstring,line-too-long,consider-using-with
+# Keep candidate byte verification beside the final-build lifecycle regressions.
+# pylint: disable=too-many-lines
 # Imports follow the vendored script path setup.
 # pylint: disable=wrong-import-position
 
@@ -58,9 +60,7 @@ def policy(profile="final-build"):
     }
 
 
-class LedgerGitHub(
-    legacy_tests.FakeGitHub
-):  # pylint: disable=too-many-instance-attributes
+class LedgerGitHub(legacy_tests.FakeGitHub):  # pylint: disable=too-many-instance-attributes
     """Model GitHub's atomic file update, independently from release mutations."""
 
     def __init__(self):
@@ -147,6 +147,126 @@ class LedgerGitHub(
             if archive_id in self.evidence_archives:
                 return self.evidence_archives[archive_id]
         return super().binary(path)
+
+
+class DownloadingGitHub(legacy_tests.FakeGitHub):
+    """Model downloads updating telemetry before the final candidate snapshot."""
+
+    def __init__(self, mutation=None):
+        super().__init__()
+        self.mutation = mutation
+        self.downloads = []
+        for asset in self.assets[10]:
+            asset.update(
+                download_count=0,
+                digest="sha256:" + rc.digest(self.files[asset["id"]]),
+                url=f"https://api.github.com/repos/{REPO}/releases/assets/{asset['id']}",
+                browser_download_url=(
+                    f"https://github.com/{REPO}/releases/download/"
+                    f"{legacy_tests.RC_TAG}/{asset['name']}"
+                ),
+                updated_at="2026-09-12T01:00:00Z",
+                extra_metadata={"download_count": 0},
+            )
+
+    def binary(self, path):
+        data = super().binary(path)
+        if path.startswith("releases/assets/"):
+            asset = next(
+                item
+                for item in self.assets[10]
+                if item["id"] == int(path.split("/")[-1])
+            )
+            asset["download_count"] += 1
+            self.downloads.append(asset["name"])
+        return data
+
+    def api(self, path, method="GET", body=None):
+        if (
+            path.startswith("git/ref/tags/")
+            and self.snapshot_reads == 1
+            and self.mutation
+        ):
+            self.mutation(self)
+            self.mutation = None
+        return super().api(path, method, body)
+
+
+class CandidateDownloadTests(unittest.TestCase):
+    """Exercise the real RC gate while the asset GETs change remote metadata."""
+
+    def verify(self, gh):
+        return lifecycle.verified_rc(gh, legacy_tests.RC_TAG, gh.info, gh.runs[99])
+
+    def test_own_downloads_do_not_invalidate_unchanged_candidate(self):
+        gh = DownloadingGitHub()
+        manifest, parent = self.verify(gh)
+        self.assertEqual(manifest, legacy_tests.manifest())
+        self.assertEqual(parent["source_sha"], SHA)
+        self.assertEqual(gh.downloads, [rc.MANIFEST, "package.tar.gz"])
+        self.assertEqual([asset["download_count"] for asset in gh.assets[10]], [1, 1])
+        self.assertEqual(gh.writes, [])
+
+    def test_asset_mutation_during_downloads_still_rejects_candidate(self):
+        for field, value in {
+            "id": 999,
+            "digest": "sha256:" + "0" * 64,
+            "size": 999,
+            "state": "new",
+            "name": "changed.tar.gz",
+            "url": "https://api.github.com/changed",
+            "browser_download_url": "https://github.com/changed",
+            "updated_at": "2026-09-12T02:00:00Z",
+            # Unknown fields, including nested counters, remain part of identity.
+            "extra_metadata": {"download_count": 1},
+        }.items():
+            with self.subTest(field=field):
+
+                def change(candidate, key=field, new=value):
+                    candidate.assets[10][0][key] = new
+
+                gh = DownloadingGitHub(change)
+                with self.assertRaises(rc.ReleaseError):
+                    self.verify(gh)
+                self.assertEqual(gh.downloads, [rc.MANIFEST, "package.tar.gz"])
+                self.assertEqual(gh.writes, [])
+
+    def test_release_and_tag_changes_during_downloads_still_reject_candidate(self):
+        def replace_release(gh):
+            gh.releases[10]["id"] = 11
+            gh.assets[11] = gh.assets[10]
+
+        changes = {
+            "release.updated_at": lambda gh: gh.releases[10].update(
+                updated_at="2026-09-12T02:00:00Z"
+            ),
+            "release.target_commitish": lambda gh: gh.releases[10].update(
+                target_commitish="b" * 40
+            ),
+            "release.id": replace_release,
+            "release.tag_name": lambda gh: gh.releases[10].update(
+                tag_name="v1.2.3-rc.3"
+            ),
+            "release.draft": lambda gh: gh.releases[10].update(draft=True),
+            "release.prerelease": lambda gh: gh.releases[10].update(prerelease=False),
+            "tag.commit": lambda gh: gh.refs[legacy_tests.RC_TAG]["object"].update(
+                sha="b" * 40
+            ),
+            "tag.type": lambda gh: gh.refs[legacy_tests.RC_TAG]["object"].update(
+                type="tag"
+            ),
+            "asset.removal": lambda gh: gh.assets[10].pop(),
+            "asset.addition": lambda gh: gh.assets[10].append(
+                dict(gh.assets[10][0], id=100, name="unexpected.zip")
+            ),
+        }
+        for name, change in changes.items():
+            with self.subTest(change=name):
+                gh = DownloadingGitHub(change)
+                with self.assertRaises(rc.ReleaseError):
+                    self.verify(gh)
+                self.assertEqual(gh.downloads, [rc.MANIFEST, "package.tar.gz"])
+                self.assertEqual(gh.writes, [])
 
 
 class AllocationTests(unittest.TestCase):

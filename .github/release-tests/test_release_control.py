@@ -294,6 +294,10 @@ class FakeGitHub:
             return self.archive
         raise AssertionError(f"Unexpected download {path}")
 
+    def download_asset(self, path, output):
+        """Write the stored bytes through the release client's streaming contract."""
+        output.write(self.binary(path))
+
     def upload(self, tag, path):
         """Model asset upload and optionally corrupt its server-side bytes."""
         self.writes.append(("upload", tag, path.name))
