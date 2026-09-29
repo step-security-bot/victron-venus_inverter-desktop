@@ -2,8 +2,22 @@
 
 The source of truth is `.release-policy.json`. `quality-gate.yml` runs the callable
 validation workflows and produces the required **CI gate** status on every PR
-and merge-queue commit. Missing, failed and skipped validation workflows fail
-the gate. Workflow and lockfile changes are included in validation.
+and merge-queue commit. Superseded PR runs are cancelled. Without an explicit
+`change_scope` policy, every change keeps full CI and normal release preparation.
+Documentation-only skipping requires that explicit opt-in. When enabled, the
+Change scope job checks the complete Git diff first; the gate accepts only proven
+documentation skips. Missing, failed or unexpectedly skipped workflows fail the
+gate. Unknown files, incomplete history, code, workflows and lockfile changes run
+full validation.
+
+The optional `change_scope` policy provides exact `documentation_paths`, exact
+`required_paths` for documentation used as a build input, and
+`always_validate_workflows` for independently required checks. Documentation paths
+cannot exempt source, tests, fixtures, build configuration or dependencies.
+Manual dispatch, scheduled runs and release qualification remain full. Only with
+explicit `change_scope` opt-in does a documentation-only push stop before release
+preparation, version allocation, artifact builds or publication. This does not
+change the configured nightly policy.
 
 ## Local checks
 
@@ -22,6 +36,7 @@ Callable validation workflows:
 - `.github/workflows/codeql.yml`
 - `.github/workflows/cargo-audit.yml`
 - `.github/workflows/cargo-deny.yml`
+- `.github/workflows/dependency-review.yml`
 
 The [release strategy](../RELEASING.md) defines versioning, channels, acceptance,
 ownership, hotfixes and rollback. This document is the operational runbook.
@@ -69,47 +84,14 @@ never update stable/latest. All required platforms must build before publication
 `release-manifest.json` records source SHA, workflow/run attempt and every payload
 SHA-256. The manifest is also saved in immutable Actions evidence for 90 days.
 
-## Desktop plugin release assets
-
-The desktop matrix builds the independent Home Assistant, Frigate, Kerberos, and
-Ring workers for macOS ARM, macOS Intel, Linux x86-64, and Windows x86-64. After collecting the
-installers, `scripts/build-release-plugins.py` builds the packaging example for the
-runner's Rust host and the workers for the selected desktop target. In particular,
-the macOS Intel job uses a host-native packager even when the runner is ARM.
-Workers are staged and packaged without being executed, and no signing keys are
-read or generated. Android and iOS jobs do not build or include these assets.
-
-Each desktop target adds nine flat files to `release-output/desktop`:
-
-- One `.idplugin` archive for each worker, named by plugin ID, worker version, and target.
-- One `.idplugin.sha256` checksum file for each archive.
-- `desktop-plugins-<target>.json`, containing all four declarations with exact versions,
-  `enabled: true`, and matching target download URLs and archive SHA-256 digests.
-
-The extraction-compatible versions are HA 0.13, Frigate 0.3, Kerberos 0.1,
-and Ring 0.1, requiring host API `^1.8`. Staging validates six supported archive
-targets; this release matrix publishes the four target platforms listed above.
-Existing installed configuration pins are never automatically bumped by an app
-upgrade. Selecting the matching release fragment is an explicit pin change.
-
-The worker Cargo versions must match their package manifest templates. URLs use
-the validated frozen release plan's tag and the GitHub repository, so they do not
-follow `latest` or another moving release. Combine target entries by plugin ID
-when preparing one configuration for multiple desktop operating systems.
-Different application releases can rebuild a worker without changing its worker
-Cargo version. Importing the new fragment explicitly selects that release's
-archive hash and supports transactional same-version replacement. An intentional
-older pin is also supported; saved pins never change merely because another
-release was published or the application was upgraded.
-
-The existing desktop version receipt runs after plugin packaging and hashes all
-nine files alongside the installers. Artifact collection and publication retain
-them as target-unique regular files; every file must match its receipt before
-publication. Producing an Actions artifact does not make its download URL public.
-Configured downloads work once that exact GitHub release is published under the
-existing release gates. Published package hashes authorize installation through
-the [application configuration contract](plugin-packages.md#declaring-plugins-in-application-configuration);
-manual signed-file selection retains its separate publisher policy.
+Automatic push betas and scheduled nightlies publish the current default HEAD.
+An older source is explicitly marked `superseded` only after ancestry and one
+newer automatic replacement run at current HEAD are verified. This does not claim
+that the replacement passed or published. No tag, release or promotion evidence
+is created for that skipped publication, and its reserved number is not reused.
+Missing replacement evidence or API failures remain errors. Manual releases keep
+their existing checks. A race after the final check can still fail publication;
+inspect the error and dispatch a fresh run at current HEAD, never reset the ledger.
 
 ## Stable promotion
 

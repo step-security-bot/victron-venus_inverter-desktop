@@ -1,1 +1,2 @@
-# Empty: this is a single-package repository
+# Explicitly keep this a single-package repository.
+packages: []

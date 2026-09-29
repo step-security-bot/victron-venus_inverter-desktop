@@ -58,7 +58,9 @@ def policy(profile="final-build"):
     }
 
 
-class LedgerGitHub(legacy_tests.FakeGitHub):  # pylint: disable=too-many-instance-attributes
+class LedgerGitHub(
+    legacy_tests.FakeGitHub
+):  # pylint: disable=too-many-instance-attributes
     """Model GitHub's atomic file update, independently from release mutations."""
 
     def __init__(self):
@@ -495,6 +497,28 @@ class LifecycleTests(unittest.TestCase):
         self.gh.source_policies[SHA] = copy.deepcopy(self.policy)
         (self.root / ".release-policy.json").write_bytes(rc.json_bytes(self.policy))
 
+    def test_prepare_uses_refreshed_run_after_transient_status(self):
+        """The frozen-plan prepare boundary waits without bypassing execution guards."""
+        original_api = self.gh.api
+        statuses = iter(("queued", "pending", "in_progress"))
+
+        def delayed(path, method="GET", body=None):
+            value = original_api(path, method, body)
+            if path == "actions/runs/99":
+                value["status"] = next(statuses)
+            return value
+
+        with (
+            patch.object(self.gh, "api", side_effect=delayed),
+            patch.object(rc.time, "sleep") as sleep,
+            patch.object(rc.time, "monotonic", return_value=0),
+        ):
+            result = lifecycle.prepare(self.args)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(result["channel"], "beta")
+        self.assertEqual(len(self.gh.ledger_writes), 1)
+        self.assertEqual(self.gh.writes, [])
+
     def test_prepare_build_receipt_publish_keeps_exact_identity(self):
         result = lifecycle.prepare(self.args)
         self.assertEqual(result["build"], "true")
@@ -527,6 +551,97 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(recorded["version_plan"], plan)
         self.assertEqual(recorded["version"], "1.2.3")
         self.assertEqual(len(recorded["assets"]), 2)
+
+    def automatic_build(self):
+        lifecycle.prepare(self.args)
+        plan = self.build_current()
+        self.gh.runs[99]["event"] = "push"
+        os.environ["GITHUB_EVENT_NAME"] = "push"
+        return plan
+
+    def advance_default(self):
+        self.gh.default_head = "b" * 40
+        self.gh.successors = [
+            {
+                **legacy_tests.run(100, False),
+                "event": "push",
+                "head_sha": self.gh.default_head,
+            }
+        ]
+
+    def test_automatic_current_head_publishes_exact_built_bytes(self):
+        plan = self.automatic_build()
+        result = lifecycle.publish_versioned(self.args)
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["tag"], plan["tag"])
+        self.assertEqual(json.loads(rc.EVIDENCE.read_bytes())["source_sha"], SHA)
+
+    def test_early_and_late_supersession_preserve_reservation_without_publication(self):
+        plan = self.automatic_build()
+        ledger = copy.deepcopy(self.gh.ledger)
+        original = lifecycle.verify_receipts
+        for late in (True, False):
+            self.gh.default_head = SHA
+            self.gh.successors = []
+
+            def advance_after_receipts(*args):
+                result = original(*args)
+                self.advance_default()
+                return result
+
+            if not late:
+                self.advance_default()
+            with patch.object(
+                lifecycle, "verify_receipts", side_effect=advance_after_receipts
+            ):
+                result = lifecycle.publish_versioned(self.args)
+            self.assertEqual(result["status"], "superseded")
+            self.assertEqual(self.gh.ledger, ledger)
+            self.assertEqual(json.loads(lifecycle.PLAN.read_bytes()), plan)
+            self.assertEqual(len(self.gh.ledger_writes), 1)
+            self.assertEqual(self.gh.writes, [])
+            self.assertFalse(rc.EVIDENCE.exists())
+
+    def test_unproven_replacement_fails_before_floor_and_tag(self):
+        self.automatic_build()
+        ledger = copy.deepcopy(self.gh.ledger)
+        self.advance_default()
+        self.gh.successors = []
+        with self.assertRaisesRegex(rc.ReleaseError, "one proven replacement"):
+            lifecycle.publish_versioned(self.args)
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertEqual(self.gh.writes, [])
+        self.assertFalse(rc.EVIDENCE.exists())
+
+    def test_supersession_does_not_hide_a_previously_consumed_plan(self):
+        plan = self.automatic_build()
+        state.begin_publication(self.gh, plan, 99)
+        self.advance_default()
+        with self.assertRaisesRegex(rc.ReleaseError, "publication floor"):
+            lifecycle.publish_versioned(self.args)
+        self.assertEqual(self.gh.ledger["publication_floor"], plan["build_number"])
+        self.assertEqual(self.gh.writes, [])
+        self.assertFalse(rc.EVIDENCE.exists())
+
+    def test_post_guard_tag_failure_consumes_floor_without_retry_or_false_skip(self):
+        plan = self.automatic_build()
+        original = self.gh.api
+        attempts = []
+
+        def denied_tag(path, method="GET", body=None):
+            if path == "git/refs" and method == "POST":
+                attempts.append(body)
+                self.advance_default()
+                raise rc.GitHubError("POST git/refs: HTTP 403")
+            return original(path, method, body)
+
+        with patch.object(self.gh, "api", side_effect=denied_tag):
+            with self.assertRaisesRegex(rc.GitHubError, "403"):
+                lifecycle.publish_versioned(self.args)
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(self.gh.ledger["publication_floor"], plan["build_number"])
+        self.assertEqual(len(self.gh.ledger_writes), 2)
+        self.assertNotIn(plan["tag"], self.gh.refs)
 
     def test_stale_request_rejects_before_reserving(self):
         Path(os.environ["GITHUB_EVENT_PATH"]).write_text(

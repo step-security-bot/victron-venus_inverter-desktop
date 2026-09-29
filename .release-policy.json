@@ -79,7 +79,7 @@
       }
     ],
     "build_number_floor": 2005042,
-    "toolkit_revision": "ba7c4ece1188974df04799158e35603e968a4bac"
+    "toolkit_revision": "73daa871b253a389c03c371713767ac41871d40e"
   },
   "build_secrets": [
     "ANDROID_KEYSTORE_BASE64",
