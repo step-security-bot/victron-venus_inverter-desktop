@@ -7,6 +7,31 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Ring-MQTT camera motion/ding handling via HA MQTT `camera_topic` wildcards and optional
   `ring_snapshot_url_template` (HTTP snapshot / HA camera_proxy). See `docs/ring-mqtt.md`.
+- Per-plugin always-on-top video windows, disabled by default, and exclusions for
+  individual legacy camera sources.
+- Live Home Assistant camera previews from configured MQTT URL topics.
+
+### Fixed
+- Camera previews start with less repeated work and discard stale queued live-preview frames.
+- Configuration restore no longer leaks subscriptions or lets an older load
+  overwrite newly restored settings. Plugin status refreshes coalesce event bursts.
+- Plugin restoration avoids repeatedly verifying every installed package for
+  each declaration while retaining integrity checks for the selected package.
+- Local macOS updates stage the replacement application before stopping the old
+  one and restore the previous bundle if replacement fails.
+- The tariff spreadsheet uses matching Univer 1.0.2 packages, fixing builds that
+  mixed incompatible Facade types. Dependabot now updates the Univer family together.
+
+### Changed
+- Update Lucide icons and Prettier. Remove the unused direct Undici development
+  dependency; jsdom keeps its compatible, patched Undici 7.29.1 dependency.
+
+### Upgrade and rollback
+- Application updates preserve the existing configuration, cached encryption key,
+  plugin version pins and enabled/disabled choices. Camera packages remain managed
+  separately through the Plugins settings.
+- Keep the previous application bundle for rollback. Updating the app does not
+  require exporting and importing configuration or enabling camera plugins.
 
 ## [2.5.41] - 2026-09-12
 

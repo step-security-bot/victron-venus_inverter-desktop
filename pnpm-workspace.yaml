@@ -2,6 +2,7 @@
 packages: []
 
 overrides:
+  # jsdom uses Undici 7 internals; retain its security patches within that major.
   undici: 7.29.1
   glob: 11.1.0
   nanoid: 5.1.16
