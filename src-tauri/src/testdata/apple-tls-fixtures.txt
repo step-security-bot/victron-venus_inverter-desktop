@@ -1,0 +1,15 @@
+Disposable public TLS certificates for Apple trust regression tests.
+
+Generated with cryptography 50.0.1, P-256 keys, and SHA-256 signatures.
+Both private keys were generated in memory and discarded. These certificates
+are not production credentials or trust anchors and are never installed in
+the OS trust store. Only the test-local verifier adds the root as an anchor.
+
+CA: Inverter disposable Apple TLS test CA; CA=true, pathLen=0, keyCertSign;
+valid 2025-01-01 through 2036-01-01.
+Leaf: tls-fixture.invalid; CA=false, digitalSignature, serverAuth EKU,
+DNS SAN tls-fixture.invalid; valid 2026-09-01 through 2027-03-01.
+Tests use a fixed verification time of 2026-09-30, independent of wall time.
+
+The older MQTT localhost fixture has a 100-year lifetime; Apple's stricter
+certificate policy rejects it, so it cannot serve as the positive control.

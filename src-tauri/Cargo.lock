@@ -2268,6 +2268,7 @@ dependencies = [
  "reqwest",
  "rumqttc-v4-next",
  "rustls-native-certs",
+ "rustls-platform-verifier",
  "semver",
  "serde",
  "serde_json",
