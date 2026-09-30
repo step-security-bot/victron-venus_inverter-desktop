@@ -19,6 +19,8 @@ export interface GridBackupStatus {
 export interface InverterState {
   /** Backend IGW snapshots replace their owned fields; MQTT events stay partial. */
   gateway_snapshot?: boolean
+  /** Cached event (failed backend poll or frontend get_state hydration). */
+  cached_snapshot?: boolean
   grid_backup?: GridBackupStatus | null
   grid_using_backup?: boolean
   grid_backup_observed_at?: number
@@ -237,6 +239,7 @@ export function applyInverterState(
 ) {
   const prev = state.value
   const merged: InverterState = { ...prev }
+  const cachedSnapshot = observation.snapshot === true || newState.cached_snapshot === true
   if (newState.gateway_snapshot) {
     for (const key of GATEWAY_OWNED_FIELDS) {
       if ((newState as Record<string, unknown>)[key] == null) {
@@ -249,6 +252,8 @@ export function applyInverterState(
       ;(merged as Record<string, unknown>)[key] = val
     }
   }
+  // Provenance belongs to this event, never to the held measurement values.
+  merged.cached_snapshot = cachedSnapshot
   if (newState.grid_backup === null) {
     delete merged.grid_backup
     merged.grid_using_backup = false
@@ -288,23 +293,29 @@ export function applyInverterState(
     })
   }
   state.value = markRaw(merged)
-  // get_state is a cached snapshot: showing the window must not make old data fresh.
-  if (!observation.snapshot) {
-    const observedAt = observation.observedAt ?? Date.now()
-    const source = observation.source ?? dataSource.value
-    const fields = { ...telemetry.value.fields }
-    if (newState.gateway_snapshot) {
-      for (const key of GATEWAY_OWNED_FIELDS) {
-        if ((newState as Record<string, unknown>)[key] == null) delete fields[key]
+  const observedAt = observation.observedAt ?? Date.now()
+  const source = observation.source ?? dataSource.value
+  const fields = { ...telemetry.value.fields }
+  let invalidated = false
+  if (newState.gateway_snapshot) {
+    for (const key of GATEWAY_OWNED_FIELDS) {
+      if ((newState as Record<string, unknown>)[key] == null && key in fields) {
+        delete fields[key]
+        invalidated = true
       }
     }
-    let observed = false
+  }
+  let observed = false
+  // Window snapshots and failed-poll replays may update visuals/invalidation,
+  // but only a genuine transport update can renew observation timestamps.
+  if (!cachedSnapshot) {
     for (const [key, value] of Object.entries(newState)) {
       if (value === null || value === undefined) continue
       // Discovery/config metadata has no periodic measurement cadence.
       if (
         [
           'gateway_snapshot',
+          'cached_snapshot',
           'ui_config',
           'features',
           'version',
@@ -319,11 +330,15 @@ export function applyInverterState(
       fields[key] = { observed_at: observedAt, source }
       observed = true
     }
-    if (observed) {
-      telemetry.value = { ...telemetry.value, observed_at: observedAt, source, fields }
-      refreshTelemetryQuality(observedAt)
+  }
+  if (observed || invalidated) {
+    telemetry.value = {
+      ...telemetry.value,
+      ...(observed ? { observed_at: observedAt, source } : {}),
+      fields,
     }
   }
+  refreshTelemetryQuality(observedAt)
 }
 
 export interface NotificationEntry {

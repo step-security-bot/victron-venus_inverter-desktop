@@ -392,7 +392,7 @@ watch(
 watch(
   () => state.value,
   (newState) => {
-    if (isWindowHidden.value) return
+    if (isWindowHidden.value || newState.cached_snapshot) return
     if (newState.gt !== undefined) addHistoryPoint(newState)
   },
   { deep: false }

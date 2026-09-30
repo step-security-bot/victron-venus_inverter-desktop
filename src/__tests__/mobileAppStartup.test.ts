@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App.vue'
 import { defaultConfig, type AppConfig } from '../config'
 import { appConfig, mqttConnected, resetInverterState } from '../composables/useInverterState'
+import { addHistoryPoint } from '../composables/useChart'
 
 const boundary = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -83,6 +84,7 @@ beforeEach(() => {
     if (name === 'get_state') return {}
   })
   resetInverterState()
+  vi.mocked(addHistoryPoint).mockClear()
   mqttConnected.value = false
   appConfig.value = configured('old-cerbo')
 })
@@ -96,6 +98,36 @@ afterEach(async () => {
 })
 
 describe('mobile dashboard startup configuration lifecycle', () => {
+  it('does not append cached getter or failed-poll history, but accepts equal fresh and partial MQTT updates', async () => {
+    boundary.invoke.mockImplementation(async (name: string) => {
+      if (name === 'get_release_info') return { version: 'test' }
+      if (name === 'get_state') return { gateway_snapshot: true, cached_snapshot: false, gt: 42 }
+    })
+    mountApp()
+    await flushPromises()
+    expect(addHistoryPoint).not.toHaveBeenCalled()
+
+    async function update(payload: Record<string, unknown>) {
+      const callbacks = events.get('mqtt-state-update')
+      expect(callbacks?.size).toBeGreaterThan(0)
+      for (const callback of callbacks ?? []) callback({ payload })
+      await flushPromises()
+    }
+    for (let poll = 0; poll < 3; poll++) {
+      await update({ gateway_snapshot: true, cached_snapshot: true, gt: 42 })
+    }
+    expect(addHistoryPoint).not.toHaveBeenCalled()
+    await update({ gateway_snapshot: true, cached_snapshot: false, gt: 42 })
+    expect(addHistoryPoint).toHaveBeenCalledTimes(1)
+    await update({ gateway_snapshot: true, cached_snapshot: false, gt: 42 })
+    expect(addHistoryPoint).toHaveBeenCalledTimes(2)
+    await update({ gateway_snapshot: true, cached_snapshot: true, gt: 42 })
+    expect(addHistoryPoint).toHaveBeenCalledTimes(2)
+    await update({ gt: 0 })
+    expect(addHistoryPoint).toHaveBeenCalledTimes(3)
+    expect(addHistoryPoint).toHaveBeenLastCalledWith(expect.objectContaining({ gt: 0 }))
+  })
+
   it('applies saved section visibility to the dashboard and responds to later saves', async () => {
     const app = mountApp()
     await flushPromises()
