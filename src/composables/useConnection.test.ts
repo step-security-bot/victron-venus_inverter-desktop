@@ -310,6 +310,54 @@ describe('inverter observation lifecycle', () => {
     expect(state.value.gt).toBe(0)
   })
 
+  it('keeps failed IGW poll replays cached through the connection debounce and resumes on recovery', async () => {
+    boundary.getConfig.mockResolvedValue({
+      ...disabled(),
+      gateway_enabled: true,
+      gateway_url: 'https://igw.example',
+    })
+    await connection.connectMqtt()
+    emit('mqtt-connection-status', true)
+    emit('mqtt-state-update', {
+      gateway_snapshot: true,
+      cached_snapshot: false,
+      gt: 42,
+      pump_switch: true,
+    })
+    const observedAt = telemetry.value.observed_at
+    await vi.advanceTimersByTimeAsync(2000)
+    emit('mqtt-connection-status', false)
+    for (let failedPoll = 0; failedPoll < 3; failedPoll++) {
+      emit('mqtt-state-update', {
+        gateway_snapshot: true,
+        cached_snapshot: true,
+        gt: 42,
+        pump_switch: null,
+      })
+      expect(mqttConnected.value).toBe(true)
+      expect(state.value.gt).toBe(42)
+      expect(state.value.pump_switch).toBeUndefined()
+      expect(telemetry.value.observed_at).toBe(observedAt)
+      expect(telemetry.value.fields.gt.observed_at).toBe(observedAt)
+      expect(telemetry.value.fields.pump_switch).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(2000)
+    }
+    await vi.advanceTimersByTimeAsync(4001)
+    expect(mqttConnected.value).toBe(false)
+    expect(telemetry.value.quality).toBe('stale')
+    emit('mqtt-connection-status', true)
+    emit('mqtt-state-update', {
+      gateway_snapshot: true,
+      cached_snapshot: false,
+      gt: 0,
+      pump_switch: false,
+    })
+    expect(telemetry.value.observed_at).toBe(Date.now())
+    expect(telemetry.value.quality).toBe('live')
+    expect(state.value.gt).toBe(0)
+    expect(state.value.pump_switch).toBe(false)
+  })
+
   it('clears old installation values when endpoint or portal configuration changes', async () => {
     await connection.connectMqtt()
     emit('mqtt-state-update', { car_soc: 75, pump_switch: true })

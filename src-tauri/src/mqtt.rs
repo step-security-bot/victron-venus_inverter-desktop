@@ -205,6 +205,9 @@ pub struct InverterState {
     /// Full IGW update: clear absent IGW-owned fields, unlike partial MQTT events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_snapshot: Option<bool>,
+    /// Backend failed-poll replay, not a fresh observation or an upstream field.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub cached_snapshot: Option<bool>,
     pub grid_backup: Option<GridBackupStatus>,
     pub grid_using_backup: Option<bool>,
     /// Genuine daemon receipt time; unrelated Cerbo overlays never renew it.

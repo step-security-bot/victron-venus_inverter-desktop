@@ -469,6 +469,7 @@ fn map_controller(snap: &GatewaySnapshot, st: &mut InverterState) {
 fn invalidate_gateway_controls(st: &mut InverterState) {
     let empty = snapshot_to_state(&GatewaySnapshot::default());
     st.gateway_snapshot = Some(true);
+    st.cached_snapshot = Some(true);
     st.booleans = empty.booleans;
     st.dry_run = None;
     st.ess_mode = None;
@@ -515,6 +516,7 @@ fn snapshot_to_state_with_instances(
 ) -> InverterState {
     let mut st = InverterState {
         gateway_snapshot: Some(true),
+        cached_snapshot: Some(false),
         ..InverterState::default()
     };
 
@@ -1632,6 +1634,41 @@ mod tests {
         assert_eq!(state.ha_direct_connected, Some(true));
         assert_eq!(state.washer_power, Some(true));
         assert_eq!(state.gt, Some(42.0));
+    }
+
+    #[test]
+    fn gateway_poll_provenance_distinguishes_cached_repeats_from_recovery() {
+        let snapshot = complete_snapshot();
+        let mut state = snapshot_to_state(&snapshot);
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["cached_snapshot"],
+            false
+        );
+        state.gt = Some(42.0);
+        invalidate_gateway_controls(&mut state);
+        let cached = serde_json::to_value(&state).unwrap();
+        assert_eq!(cached["gateway_snapshot"], true);
+        assert_eq!(cached["cached_snapshot"], true);
+        assert_eq!(cached["gt"], 42.0);
+        assert_eq!(cached["pump_switch"], Value::Null);
+        invalidate_gateway_controls(&mut state);
+        assert_eq!(serde_json::to_value(&state).unwrap(), cached);
+
+        let recovered = snapshot_to_state(&snapshot);
+        assert_eq!(
+            serde_json::to_value(recovered).unwrap()["cached_snapshot"],
+            false
+        );
+        // This marker describes the backend's event, never upstream JSON input.
+        let upstream: InverterState = serde_json::from_value(cached).unwrap();
+        assert!(serde_json::to_value(upstream)
+            .unwrap()
+            .get("cached_snapshot")
+            .is_none());
+        assert!(serde_json::to_value(InverterState::default())
+            .unwrap()
+            .get("cached_snapshot")
+            .is_none());
     }
 
     #[tokio::test]

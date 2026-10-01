@@ -160,6 +160,22 @@ mod tests {
         assert!(server.join().unwrap().is_err());
     }
 
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[test]
+    fn apple_tls_rejects_untrusted_peer_before_sending_credentials() {
+        let (port, server) = tls_broker();
+        let config = crate::tls::apple_client_config().unwrap();
+        assert!(super::super::probe_mqtt_connack(
+            "localhost",
+            port,
+            Some("fixture-user"),
+            Some("fixture-password"),
+            Transport::tls_with_config(config.into()),
+        )
+        .is_err());
+        assert!(server.join().unwrap().is_err());
+    }
+
     #[test]
     fn anonymous_cerbo_tcp_remains_supported() {
         assert!(matches!(
