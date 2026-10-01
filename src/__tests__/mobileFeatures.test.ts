@@ -209,14 +209,14 @@ describe('mobile build feature boundary', () => {
     }
   })
 
-  it('omits the mobile disclosure when header toggles are hidden or absent', async () => {
+  it('keeps published controls reachable when the saved desktop header preference is false', async () => {
     const wrapper = mount(AppHeader, {
       props: {
         dryRun: false,
         essClass: 'off',
         essText: 'ESS',
-        headerControls: [{ id: 'limit', label: 'Export limit', entity: 'no_feed' }],
-        controlStates: {},
+        headerControls: [],
+        controlStates: { minimize: 'off' },
         isDark: false,
         showHeaderToggles: false,
       },
@@ -225,11 +225,29 @@ describe('mobile build feature boundary', () => {
       expect(wrapper.find('button[aria-expanded]').exists()).toBe(false)
       expect(wrapper.find('fieldset').exists()).toBe(false)
       expect(wrapper.find('.mobile-header-row').findAll('button')).toHaveLength(4)
-      await wrapper.setProps({ showHeaderToggles: true, headerControls: [] })
+      // A fresh controller snapshot can arrive after initial configuration.
+      await wrapper.setProps({
+        headerControls: [
+          { id: 'minimize', label: 'Minimize charging', entity: 'minimize_charging' },
+        ],
+      })
+      const disclosure = wrapper.get('button[aria-label="Controls"]')
+      expect(disclosure.text()).toBe('Controls')
+      expect(disclosure.attributes('aria-expanded')).toBe('false')
+      await disclosure.trigger('click')
+      const control = wrapper
+        .findAll('button')
+        .find((button) => button.text() === 'Minimize charging')!
+      expect(control.isVisible()).toBe(true)
+      expect(wrapper.emitted('send')).toBeUndefined()
+      await control.trigger('click')
+      expect(wrapper.emitted('send')).toEqual([['toggle', { entity: 'minimize_charging' }]])
+      // Withdrawing the published control also withdraws the rendered action.
+      await wrapper.setProps({ headerControls: [] })
       expect(wrapper.find('button[aria-expanded]').exists()).toBe(false)
       expect(wrapper.find('fieldset').exists()).toBe(false)
       expect(wrapper.find('button[aria-label="Dark mode"]').exists()).toBe(true)
-      expect(wrapper.emitted('send')).toBeUndefined()
+      expect(wrapper.emitted('send')).toHaveLength(1)
     } finally {
       wrapper.unmount()
     }

@@ -540,6 +540,7 @@
                   <span class="text-[11px] font-bold text-main">Home Buttons</span>
                 </label>
                 <label
+                  v-if="!isMobileApp"
                   class="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#1c1c1e] cursor-pointer group hover:border-accent/40 transition-colors"
                 >
                   <input

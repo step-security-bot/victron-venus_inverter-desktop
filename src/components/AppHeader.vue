@@ -18,7 +18,7 @@
         <Zap :size="14" /><span class="mobile-header-label">{{ essText }}</span>
       </UiButton>
       <UiButton
-        v-if="showHeaderToggles !== false && headerControls.length > 0"
+        v-if="headerControls.length > 0"
         class="mobile-header-touch mobile-header-disclosure"
         aria-label="Controls"
         title="Controls"
@@ -50,7 +50,7 @@
       </UiButton>
     </div>
     <fieldset
-      v-if="showHeaderToggles !== false && headerControls.length > 0"
+      v-if="headerControls.length > 0"
       v-show="controlsExpanded"
       :id="controlsId"
       class="mobile-header-controls"
@@ -189,6 +189,8 @@ function activate(control: DashboardControlView) {
   else emit('send', 'toggle', { entity: control.entity })
 }
 
+// Mobile always offers access to published controls. The desktop section
+// preference must not hide the only way to open this compact disclosure.
 const controlsExpanded = ref(false)
 const controlsId = `header-controls-${useId()}`
 
@@ -201,16 +203,16 @@ function isToggleUnavailable(state: string | undefined): boolean {
 .mobile-header {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--mobile-gap, 6px);
   width: 100%;
   min-width: 0;
-  padding: 4px 6px;
+  padding: calc(4px * var(--mobile-density, 1)) calc(6px * var(--mobile-density, 1));
 }
 
 .mobile-header-row {
   display: flex;
   align-items: stretch;
-  gap: 4px;
+  gap: calc(4px * var(--mobile-density, 1));
   min-width: 0;
 }
 
@@ -218,9 +220,9 @@ function isToggleUnavailable(state: string | undefined): boolean {
   min-width: 44px;
   min-height: 44px;
   height: auto;
-  padding: 6px;
-  gap: 4px;
-  font-size: 12px;
+  padding: calc(6px * var(--mobile-density, 1));
+  gap: calc(4px * var(--mobile-density, 1));
+  font-size: var(--mobile-caption-size, 12px);
   line-height: 1.25;
   white-space: normal;
 }
@@ -256,22 +258,19 @@ function isToggleUnavailable(state: string | undefined): boolean {
 .mobile-header-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--mobile-gap, 6px);
   width: 100%;
   min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
+  max-height: min(35svh, 240px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .mobile-header-control {
   flex: 1 1 140px;
   max-width: 100%;
-}
-
-@media (max-width: 380px) {
-  .mobile-header-disclosure-label {
-    display: none;
-  }
 }
 </style>
