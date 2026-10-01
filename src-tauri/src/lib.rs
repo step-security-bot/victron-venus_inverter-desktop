@@ -17,6 +17,8 @@ mod plugin_config;
 #[cfg(desktop)]
 pub mod plugins;
 mod release_info;
+#[cfg(desktop)]
+mod tariff_export;
 mod tls;
 
 #[cfg(all(desktop, feature = "native-media-smoke"))]
@@ -1544,6 +1546,7 @@ pub fn run() {
                 }
                 #[cfg(desktop)]
                 let handler: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
+                    tariff_export::export_tariff,
                     release_info::get_release_info,
                     plugins::bridge::get_plugin_snapshot,
                     plugins::bridge::plugin_action,

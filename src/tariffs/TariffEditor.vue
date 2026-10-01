@@ -146,6 +146,7 @@ import {
   type TariffPlan,
 } from './model'
 import { clearTariff, saveTariff } from './storage'
+import { exportTariff } from './export'
 
 const props = withDefaults(
   defineProps<{
@@ -314,14 +315,7 @@ async function exportFile() {
   busy.value = true
   try {
     const plan = await readPlan()
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(plan, null, 2)], { type: 'application/json' })
-    )
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = 'electricity-tariff.json'
-    anchor.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    message.value = (await exportTariff(plan)) ? 'Tariff exported.' : 'Export cancelled.'
     error.value = ''
   } catch (cause) {
     fail(cause)

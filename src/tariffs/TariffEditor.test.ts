@@ -6,6 +6,8 @@ import { loadTariff } from './storage'
 import TariffEditor from './TariffEditor.vue'
 
 const sheetState = vi.hoisted(() => ({ edits: null as RateGrid | null, fail: false }))
+const exportDocument = vi.hoisted(() => vi.fn())
+vi.mock('./export', () => ({ exportTariff: exportDocument }))
 vi.mock('./TariffSheet.vue', () => ({
   default: defineComponent({
     props: ['rates'],
@@ -27,6 +29,7 @@ beforeEach(() => {
   HTMLDialogElement.prototype.close = vi.fn()
   sheetState.edits = null
   sheetState.fail = false
+  exportDocument.mockReset().mockResolvedValue(true)
   const data = new Map<string, string>()
   vi.stubGlobal('localStorage', {
     getItem: (key: string) => data.get(key) ?? null,
@@ -46,6 +49,57 @@ const tariff = () =>
     rates: rateGrid(0.3),
     seasons: [{ name: 'Summer', months: [6, 7, 8, 9], rates: rateGrid(0.5) }],
   })
+
+it('exports pending cells without saving the tariff and blocks duplicate actions until the dialog closes', async () => {
+  let finish!: (saved: boolean) => void
+  exportDocument.mockReturnValue(
+    new Promise<boolean>((resolve) => {
+      finish = resolve
+    })
+  )
+  const savePlan = vi.fn()
+  const wrapper = mount(TariffEditor, { props: { plan: tariff(), savePlan } })
+  const cells = rateGrid(0.31)
+  cells[0][0] = 0.1234
+  sheetState.edits = cells
+  const button = wrapper.findAll('button').find((b) => b.text() === 'Export tariff')!
+  await button.trigger('click')
+  await flushPromises()
+  expect(exportDocument).toHaveBeenCalledTimes(1)
+  expect(exportDocument.mock.calls[0][0].seasons[0].rates).toEqual(cells)
+  expect(button.attributes('disabled')).toBeDefined()
+  expect(wrapper.get('.tariff-save').attributes('disabled')).toBeDefined()
+  expect(savePlan).not.toHaveBeenCalled()
+  expect(localStorage.setItem).not.toHaveBeenCalled()
+  expect(wrapper.emitted('saved')).toBeUndefined()
+  finish(false)
+  await flushPromises()
+  expect(wrapper.text()).toContain('Export cancelled.')
+  expect(button.attributes('disabled')).toBeUndefined()
+  expect(savePlan).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('keeps the draft editable after an export failure and does not export an uncommitted invalid cell', async () => {
+  const wrapper = mount(TariffEditor, { props: { plan: tariff(), savePlan: vi.fn() } })
+  const button = wrapper.findAll('button').find((b) => b.text() === 'Export tariff')!
+  sheetState.fail = true
+  await button.trigger('click')
+  await flushPromises()
+  expect(exportDocument).not.toHaveBeenCalled()
+  sheetState.fail = false
+  exportDocument.mockRejectedValueOnce(new Error('Disk is full'))
+  await button.trigger('click')
+  await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toContain('Disk is full')
+  expect(button.attributes('disabled')).toBeUndefined()
+  await button.trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('Tariff exported.')
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  expect(wrapper.emitted('saved')).toBeUndefined()
+  wrapper.unmount()
+})
 it('commits pending cells before switching season and preserves both schedules on save', async () => {
   const wrapper = mount(TariffEditor, { props: { plan: tariff(), tariffScope: 'editor-site' } })
   expect(wrapper.get('select').element.value).toBe('0')
