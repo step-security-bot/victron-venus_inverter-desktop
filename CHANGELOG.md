@@ -15,6 +15,8 @@ All notable changes to this project will be documented in this file.
   time, and unavailable or stale readings remain unknown.
 
 ### Fixed
+- Desktop tariff exports use the system save dialog, avoiding a macOS WebKit
+  download hang. Cancelling the export leaves the tariff draft unchanged.
 - Camera previews start with less repeated work and discard stale queued live-preview frames.
 - Configuration restore no longer leaks subscriptions or lets an older load
   overwrite newly restored settings. Plugin status refreshes coalesce event bursts.

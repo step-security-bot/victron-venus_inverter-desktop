@@ -240,6 +240,7 @@ mod tests {
             "get_config",
             "save_config",
             "backup_config",
+            "export_tariff",
             "restore_config",
             "perform_action",
             "get_setpoint_override",
