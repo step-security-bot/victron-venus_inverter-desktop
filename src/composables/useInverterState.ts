@@ -1,3 +1,4 @@
+import type { EssModeState } from '../essMode'
 import { markRaw, ref, shallowRef } from 'vue'
 // shallowRef + replace-with-new-object (see applyInverterState): nested loads/etc.
 // update when MQTT sends a fresh snapshot. markRaw avoids deep-proxying big payloads.
@@ -46,7 +47,7 @@ export interface InverterState {
   ha_connected?: boolean
   ha_direct_connected?: boolean
   dry_run?: boolean
-  ess_mode?: { mode_name?: string; is_external?: boolean }
+  ess_mode?: EssModeState
   booleans?: Record<string, boolean>
   features?: Record<string, boolean>
   mppt_individual?: number[]

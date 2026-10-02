@@ -9,14 +9,15 @@
       >
         <FlaskConical :size="14" /> DRY
       </UiButton>
-      <UiButton
-        class="mobile-header-touch mobile-header-ess"
-        toggle
+      <EssModeMenu
+        mobile
+        :mode="essMode"
+        :label="essText"
         :active="essClass === 'on'"
-        @click="$emit('send', 'ess_mode')"
-      >
-        <Zap :size="14" /><span class="mobile-header-label">{{ essText }}</span>
-      </UiButton>
+        :dry-run="dryRun"
+        :connected="essConnected"
+        :fresh="essFresh"
+      />
       <UiButton
         v-if="headerControls.length > 0"
         class="mobile-header-touch mobile-header-disclosure"
@@ -90,15 +91,14 @@
         <FlaskConical :size="10" /> DRY
       </UiButton>
 
-      <UiButton
-        class="min-w-[45px]"
-        size="sm"
-        toggle
+      <EssModeMenu
+        :mode="essMode"
+        :label="essText"
         :active="essClass === 'on'"
-        @click="$emit('send', 'ess_mode')"
-      >
-        <Zap :size="10" /> {{ essText }}
-      </UiButton>
+        :dry-run="dryRun"
+        :connected="essConnected"
+        :fresh="essFresh"
+      />
 
       <template v-if="showHeaderToggles !== false && headerControls.length > 0">
         <div class="soft-divider mx-0.5"></div>
@@ -154,7 +154,6 @@
 <script setup lang="ts">
 import {
   FlaskConical,
-  Zap,
   Sun,
   Moon,
   Settings,
@@ -165,12 +164,17 @@ import {
 import { isMobileApp } from '@features'
 import { ref, useId } from 'vue'
 import UiButton from './UiButton.vue'
+import EssModeMenu from './EssModeMenu.vue'
+import type { EssModeState } from '../essMode'
 import type { DashboardControlView } from '../dashboardControlView'
 
 defineProps<{
   dryRun: boolean
   essClass: string
   essText: string
+  essMode?: EssModeState
+  essConnected?: boolean
+  essFresh?: boolean
   headerControls: DashboardControlView[]
   controlStates: Record<string, string> | undefined
   isDark: boolean
@@ -241,11 +245,6 @@ function isToggleUnavailable(state: string | undefined): boolean {
   width: 44px;
 }
 
-.mobile-header-ess {
-  flex: 1 1 0;
-  max-width: 180px;
-}
-
 .mobile-header-settings {
   margin-left: auto;
 }
@@ -272,5 +271,10 @@ function isToggleUnavailable(state: string | undefined): boolean {
 .mobile-header-control {
   flex: 1 1 140px;
   max-width: 100%;
+}
+@media (max-width: 360px) {
+  .mobile-header-disclosure-label {
+    display: none;
+  }
 }
 </style>

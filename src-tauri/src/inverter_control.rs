@@ -6,6 +6,38 @@
 
 use serde_json::Value;
 
+pub(crate) const ESS_MODES: &[&str] = &[
+    "off",
+    "on",
+    "optimized_with_battery_life",
+    "optimized_without_battery_life",
+    "keep_batteries_charged",
+    "external_control",
+];
+
+pub(crate) fn validate_ess_selection(body: &Value) -> Result<(), String> {
+    let valid = body.as_object().is_some_and(|obj| obj.len() == 2)
+        && body
+            .get("mode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| ESS_MODES.contains(&mode))
+        && body
+            .get("request_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-')
+                    })
+            });
+    if valid {
+        Ok(())
+    } else {
+        Err("Invalid ESS mode selection".into())
+    }
+}
+
 /// Keep aligned with inverter-control's `control_flags.CONTROL_FLAG_KEYS`.
 pub(crate) const FLAG_KEYS: &[&str] = &[
     "only_charging",

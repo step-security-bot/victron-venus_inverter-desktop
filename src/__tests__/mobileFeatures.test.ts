@@ -133,7 +133,7 @@ describe('mobile build feature boundary', () => {
     const wrapper = mount(Harness, { global: globalOptions, attachTo: document.body })
     expect(wrapper.text()).toContain('Export limit')
     expect(wrapper.text()).not.toContain('Living room lamp')
-    const disclosure = wrapper.find('button[aria-expanded]')
+    const disclosure = wrapper.find('button[aria-label="Controls"]')
     expect(disclosure.attributes('aria-label')).toBe('Controls')
     expect(disclosure.text()).toBe('Controls')
     expect(disclosure.attributes('aria-expanded')).toBe('false')
@@ -174,7 +174,7 @@ describe('mobile build feature boundary', () => {
     })
     try {
       const row = wrapper.find('.mobile-header-row')
-      const disclosure = row.find('button[aria-expanded]')
+      const disclosure = row.find('button[aria-label="Controls"]')
       const region = wrapper.find('fieldset[aria-label="Inverter controls"]')
       expect(disclosure.attributes('aria-controls')).toBe(region.attributes('id'))
       expect(region.isVisible()).toBe(false)
@@ -198,12 +198,12 @@ describe('mobile build feature boundary', () => {
         .findAll('button')
         .find((button) => button.text() === 'DRY')!
         .trigger('click')
-      expect(wrapper.emitted('send')).toEqual([['ess_mode'], ['dry_run', { value: false }]])
+      expect(wrapper.emitted('send')).toEqual([['dry_run', { value: false }]])
 
       await disclosure.trigger('click')
       expect(disclosure.attributes('aria-expanded')).toBe('false')
       expect(region.isVisible()).toBe(false)
-      expect(wrapper.emitted('send')).toHaveLength(2)
+      expect(wrapper.emitted('send')).toHaveLength(1)
     } finally {
       wrapper.unmount()
     }
@@ -222,7 +222,7 @@ describe('mobile build feature boundary', () => {
       },
     })
     try {
-      expect(wrapper.find('button[aria-expanded]').exists()).toBe(false)
+      expect(wrapper.find('button[aria-label="Controls"]').exists()).toBe(false)
       expect(wrapper.find('fieldset').exists()).toBe(false)
       expect(wrapper.find('.mobile-header-row').findAll('button')).toHaveLength(4)
       // A fresh controller snapshot can arrive after initial configuration.
@@ -244,7 +244,7 @@ describe('mobile build feature boundary', () => {
       expect(wrapper.emitted('send')).toEqual([['toggle', { entity: 'minimize_charging' }]])
       // Withdrawing the published control also withdraws the rendered action.
       await wrapper.setProps({ headerControls: [] })
-      expect(wrapper.find('button[aria-expanded]').exists()).toBe(false)
+      expect(wrapper.find('button[aria-label="Controls"]').exists()).toBe(false)
       expect(wrapper.find('fieldset').exists()).toBe(false)
       expect(wrapper.find('button[aria-label="Dark mode"]').exists()).toBe(true)
       expect(wrapper.emitted('send')).toHaveLength(1)

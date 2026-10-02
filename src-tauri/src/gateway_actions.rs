@@ -19,6 +19,7 @@ enum Action {
     },
     DryRun(bool),
     EssMode,
+    SelectEssMode(Value),
     ElectricityTariff(Value),
     WaterMode {
         instance: Option<u32>,
@@ -73,6 +74,10 @@ fn parse(action: &str, payload: Value, water: GatewayInstances) -> Result<Action
             .map(Action::DryRun)
             .ok_or_else(invalid),
         "ess_mode" if object.is_empty() => Ok(Action::EssMode),
+        "set_ess_mode" => {
+            inverter_control::validate_ess_selection(&payload)?;
+            Ok(Action::SelectEssMode(payload))
+        }
         "electricity_tariff" => {
             inverter_control::validate_tariff_command(&payload)?;
             Ok(Action::ElectricityTariff(payload))
@@ -123,6 +128,28 @@ where
         }
         Action::DryRun(value) => ("dry_run", json!({"value":value})),
         Action::EssMode => ("ess_mode", json!({})),
+        Action::SelectEssMode(body) => {
+            let snap = snapshot().await?;
+            if snap
+                .capabilities
+                .get("set_ess_mode")
+                .and_then(Value::as_bool)
+                != Some(true)
+            {
+                return Err("Update inverter-gateway to select an ESS mode".into());
+            }
+            if snap
+                .inverter
+                .as_ref()
+                .and_then(|state| state.get("ess_mode"))
+                .and_then(|mode| mode.get("selection_supported"))
+                .and_then(Value::as_bool)
+                != Some(true)
+            {
+                return Err("Update inverter-control or wait for fresh ESS telemetry".into());
+            }
+            ("set_ess_mode", body)
+        }
         Action::ElectricityTariff(body) => {
             let snap = snapshot().await?;
             if snap
@@ -331,6 +358,37 @@ mod tests {
         )
         .await;
         (result, calls.into_inner())
+    }
+
+    #[tokio::test]
+    async fn ess_selection_requires_both_capabilities_and_posts_exactly_once() {
+        for mode in crate::inverter_control::ESS_MODES {
+            let body = json!({"mode":mode,"request_id":"ess-1"});
+            for (gateway, controller) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let snapshot =
+                    serde_json::from_value(json!({"capabilities":{"set_ess_mode":gateway},
+                    "inverter":{"ess_mode":{"selection_supported":controller}}}))
+                    .unwrap();
+                let (result, posts) = request("set_ess_mode", body.clone(), Ok(snapshot)).await;
+                if gateway && controller {
+                    result.unwrap();
+                    assert_eq!(posts, vec![("set_ess_mode", body.clone())]);
+                } else {
+                    assert!(result.is_err());
+                    assert!(posts.is_empty());
+                }
+            }
+        }
+        for body in [
+            json!({}),
+            json!({"mode":"off","request_id":""}),
+            json!({"mode":"toggle","request_id":"a"}),
+            json!({"mode":"off","request_id":"a","extra":1}),
+        ] {
+            assert!(parse("set_ess_mode", body, GatewayInstances::default()).is_err());
+        }
     }
 
     #[tokio::test]

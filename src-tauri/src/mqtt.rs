@@ -239,6 +239,8 @@ pub struct InverterState {
     pub ha_direct_connected: Option<bool>,
     pub dry_run: Option<bool>,
     pub ess_mode: Option<EssMode>,
+    #[serde(default, skip_deserializing)]
+    pub ess_mode_observed_at: Option<f64>,
     pub booleans: Option<std::collections::HashMap<String, bool>>,
     pub features: Option<std::collections::HashMap<String, bool>>,
     pub mppt_individual: Option<Vec<f64>>,
@@ -284,6 +286,8 @@ pub struct InverterState {
 
 #[derive(Deserialize, Default)]
 struct RawInverterState {
+    #[serde(skip)]
+    ess_mode_retained: bool,
     #[serde(default, deserialize_with = "deserialize_grid_backup")]
     grid_backup: Option<Option<GridBackupStatus>>,
     grid_using_backup: Option<bool>,
@@ -421,6 +425,11 @@ pub(crate) fn inverter_state_name(code: u32) -> String {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EssMode {
+    pub selected: Option<String>,
+    pub vebus_mode: Option<u8>,
+    pub selection_supported: Option<bool>,
+    pub request_id: Option<String>,
+    pub error: Option<String>,
     pub mode_name: Option<String>,
     pub is_external: Option<bool>,
 }
@@ -1425,6 +1434,9 @@ impl MqttClient {
                     if let Ok(mut slot) = client_slot.lock() {
                         *slot = None;
                     }
+                    if let Ok(mut state) = state.lock() {
+                        state.ess_mode_observed_at = None;
+                    }
                     if let Some(ref handle) = app_handle {
                         shutdown.while_running(|| {
                             let _ = handle.emit(&status_event, false);
@@ -1575,6 +1587,7 @@ impl MqttClient {
                             Self::handle_message(
                                 &topic,
                                 &payload,
+                                publish.retain,
                                 &state_c,
                                 &app_c,
                                 &water_c,
@@ -1711,6 +1724,7 @@ impl MqttClient {
     fn handle_message(
         topic: &str,
         payload: &str,
+        retained: bool,
         state: &Arc<Mutex<InverterState>>,
         app_handle: &Option<tauri::AppHandle>,
         water_instances: &Option<(Option<u32>, Option<u32>, Option<u32>)>,
@@ -1726,6 +1740,7 @@ impl MqttClient {
         if topic == "inverter/state" {
             match serde_json::from_str::<RawInverterState>(payload) {
                 Ok(mut raw) => {
+                    raw.ess_mode_retained = retained;
                     raw.resolve_short_battery_keys();
                     Self::process_state_update(
                         raw,
@@ -2523,7 +2538,11 @@ impl MqttClient {
         merge_opt!(uptime, raw.uptime);
         merge_opt!(ha_connected, raw.ha_connected);
         merge_opt!(ha_direct_connected, raw.ha_direct_connected);
-        merge_opt!(ess_mode, raw.ess_mode);
+        if let Some(mode) = raw.ess_mode {
+            new_state.ess_mode = Some(mode);
+            new_state.ess_mode_observed_at =
+                (!raw.ess_mode_retained).then(|| Utc::now().timestamp_millis() as f64 / 1000.0);
+        }
         if !cerbo_owns_chargers {
             merge_opt!(mppt_individual, raw.mppt_individual);
         }
@@ -2908,6 +2927,25 @@ impl MqttClient {
         action: &str,
         mut payload: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if action == "set_ess_mode" {
+            crate::inverter_control::validate_ess_selection(&payload)?;
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("Internal error: {e}"))?;
+            let now = Utc::now().timestamp_millis() as f64 / 1000.0;
+            if state
+                .ess_mode
+                .as_ref()
+                .and_then(|mode| mode.selection_supported)
+                != Some(true)
+                || !state
+                    .ess_mode_observed_at
+                    .is_some_and(|at| (0.0..=30.0).contains(&(now - at)))
+            {
+                return Err("Update inverter-control or wait for fresh ESS telemetry".into());
+            }
+        }
         crate::inverter_control::prepare_command(action, &mut payload, |key| self.flag_state(key));
         let guard = self
             .client
@@ -2920,7 +2958,16 @@ impl MqttClient {
         } else {
             serde_json::to_string(&payload)?
         };
-        client.publish(topic, QoS::AtLeastOnce, false, payload_str)?;
+        let qos = if action == "set_ess_mode" {
+            QoS::AtMostOnce
+        } else {
+            QoS::AtLeastOnce
+        };
+        if action == "set_ess_mode" {
+            client.try_publish(topic, qos, false, payload_str)?;
+        } else {
+            client.publish(topic, qos, false, payload_str)?;
+        }
         Ok(())
     }
 }
@@ -2928,6 +2975,66 @@ impl MqttClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ess_selection_rejects_unsupported_stale_and_forged_telemetry() {
+        let client = MqttClient::new("localhost".into(), 1883, None, None, "ess-test".into());
+        let body = serde_json::json!({"mode":"off","request_id":"a"});
+        for age in [None, Some(31.0), Some(-5.0)] {
+            let mut state = client.state.lock().unwrap();
+            state.ess_mode = Some(EssMode {
+                selection_supported: Some(true),
+                ..Default::default()
+            });
+            state.ess_mode_observed_at =
+                age.map(|age| Utc::now().timestamp_millis() as f64 / 1000.0 - age);
+            drop(state);
+            assert!(client
+                .publish_command("set_ess_mode", body.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("fresh ESS"));
+        }
+        let mut forged_json = serde_json::to_value(InverterState::default()).unwrap();
+        forged_json["ess_mode_observed_at"] = serde_json::json!(99999999999.0);
+        let forged: InverterState = serde_json::from_value(forged_json).unwrap();
+        assert!(forged.ess_mode_observed_at.is_none());
+        assert!(client
+            .publish_command("set_ess_mode", serde_json::json!({}))
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid ESS"));
+    }
+
+    #[test]
+    fn retained_ess_status_is_display_only_and_cannot_enable_commands() {
+        let client = MqttClient::new("localhost".into(), 1883, None, None, "ess-test".into());
+        for retained in [false, true] {
+            MqttClient::process_state_update(
+                RawInverterState {
+                    ess_mode: Some(EssMode {
+                        selected: Some("external_control".into()),
+                        selection_supported: Some(true),
+                        ..Default::default()
+                    }),
+                    ess_mode_retained: retained,
+                    ..Default::default()
+                },
+                client.state.clone(),
+                None,
+                empty_notifications(),
+                None,
+                Arc::new(Mutex::new(EvCache::default())),
+                &Arc::new(StateEmitter::new(true)),
+            );
+            let state = client.state.lock().unwrap();
+            assert_eq!(state.ess_mode_observed_at.is_some(), !retained);
+            assert_eq!(
+                state.ess_mode.as_ref().unwrap().selected.as_deref(),
+                Some("external_control")
+            );
+        }
+    }
 
     #[test]
     fn grid_daily_energy_survives_mqtt_and_gateway_and_clears_with_old_snapshots() {
@@ -3905,6 +4012,7 @@ mod tests {
             ess_mode: Some(EssMode {
                 mode_name: Some("Optimized".into()),
                 is_external: Some(true),
+                ..Default::default()
             }),
             ..Default::default()
         };
