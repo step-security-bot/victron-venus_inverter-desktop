@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from contextlib import chdir
 from unittest.mock import patch
@@ -132,6 +133,31 @@ class ReleaseVersionTests(unittest.TestCase):
         manifest.write_bytes(manifest.read_bytes() + b"# unrelated build mutation\n")
         with self.assertRaisesRegex(ValueError, "Build input changed after version sync"):
             verify_current_inputs(self.root, evidence)
+
+    def test_tauri_asset_protocol_is_declared_for_every_platform_dependency(self):
+        """Prevent Tauri init/build from rewriting a receipted Cargo manifest."""
+        config = json.loads((self.root / "src-tauri/tauri.conf.json").read_bytes())
+        manifest = tomllib.loads((self.root / "src-tauri/Cargo.toml").read_text())
+        if not config["app"]["security"]["assetProtocol"]["enable"]:
+            return
+        dependencies = {"dependencies": manifest["dependencies"]}
+        dependencies.update(
+            {
+                f"target.{target}.dependencies": settings.get("dependencies", {})
+                for target, settings in manifest.get("target", {}).items()
+            }
+        )
+        for table, entries in dependencies.items():
+            if "tauri" not in entries:
+                continue
+            with self.subTest(table=table):
+                self.assertIsInstance(entries["tauri"], dict)
+                self.assertIn(
+                    "protocol-asset",
+                    entries["tauri"].get("features", []),
+                    "Tauri injects configured asset protocol into every dependency "
+                    "table, including targets inactive on the current platform",
+                )
 
     def test_ios_package_keeps_numeric_versions_and_full_candidate_identity(self):
         """Inspect the plist and embedded identity in an actual IPA archive."""
