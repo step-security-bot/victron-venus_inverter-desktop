@@ -28,7 +28,7 @@
     "@univerjs/preset-sheets-core": "1.0.2",
     "@univerjs/presets": "1.0.2",
     "echarts": "^6.1.0",
-    "vue": "^3.5.35",
+    "vue": "^3.5.43",
     "vue-echarts": "^8.3.0",
     "vue-i18n": "^11"
   },
