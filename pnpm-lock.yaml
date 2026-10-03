@@ -48,8 +48,8 @@ importers:
         specifier: ^3.5.43
         version: 3.5.43(typescript@6.0.3)
       vue-echarts:
-        specifier: ^8.3.0
-        version: 8.3.0(echarts@6.1.0)(vue@3.5.43(typescript@6.0.3))
+        specifier: ^8.3.1
+        version: 8.3.1(echarts@6.1.0)(vue@3.5.43(typescript@6.0.3))
       vue-i18n:
         specifier: ^11
         version: 11.4.12(vue@3.5.43(typescript@6.0.3))
@@ -2186,8 +2186,8 @@ packages:
   vue-component-type-helpers@3.3.10:
     resolution: {integrity: sha512-t7IQivQ3oD4D01b7s7a9AWzHAcr3DGBIa/1jZREsFQJcFgSL92gqUkqNiHTYgzTt7QDuJa0I9wCeDwEtZICoBQ==}
 
-  vue-echarts@8.3.0:
-    resolution: {integrity: sha512-gqOZ5uuBF4x4KTXQpTmgH5BuAwUSO+y9U7L1pHCIESQvgnTitXtnyjrfePH+9YXMRhmTLjchEx3EnsPhoiIX/A==}
+  vue-echarts@8.3.1:
+    resolution: {integrity: sha512-wN9ycF1+P8j3aajxawRT6R/8asZNBejl1kK2M2/Lk6wCdK2XG+YK39sDfZLF8S5UaBbNZqzN1joObtRhmhORJg==}
     peerDependencies:
       echarts: ^6.0.0
       vue: ^3.3.0
@@ -4197,7 +4197,7 @@ snapshots:
 
   vue-component-type-helpers@3.3.10: {}
 
-  vue-echarts@8.3.0(echarts@6.1.0)(vue@3.5.43(typescript@6.0.3)):
+  vue-echarts@8.3.1(echarts@6.1.0)(vue@3.5.43(typescript@6.0.3)):
     dependencies:
       echarts: 6.1.0
       vue: 3.5.43(typescript@6.0.3)
