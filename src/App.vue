@@ -14,7 +14,9 @@
           :essText="essText"
           :essMode="state.ess_mode"
           :essConnected="mqttConnected"
-          :essFresh="!!telemetry.fields.ess_mode && !telemetry.stale_fields.includes('ess_mode')"
+          :essFresh="
+            isEssModeCommandFresh(state.ess_mode, state.ess_mode_observed_at, telemetryClockMs)
+          "
           :headerControls="headerControls"
           :controlStates="headerControlStates"
           :isDark="isDark"
@@ -138,12 +140,13 @@
 </template>
 
 <script setup lang="ts">
+import { isEssModeCommandFresh } from './essMode'
 import { useReleaseVersion } from './composables/useReleaseVersion'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppHeader from './components/AppHeader.vue'
-import { telemetry } from './composables/useInverterState'
+import { telemetryClockMs } from './composables/useInverterState'
 import SetupWizard from './components/SetupWizard.vue'
 import BatterySolarPanel from './components/BatterySolarPanel.vue'
 import ChartPanel from './components/ChartPanel.vue'

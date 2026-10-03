@@ -48,6 +48,8 @@ export interface InverterState {
   ha_direct_connected?: boolean
   dry_run?: boolean
   ess_mode?: EssModeState
+  /** Live ESS observation time (seconds); absent/null after retained-only state. */
+  ess_mode_observed_at?: number | null
   booleans?: Record<string, boolean>
   features?: Record<string, boolean>
   mppt_individual?: number[]
@@ -170,7 +172,13 @@ export const telemetry = shallowRef<TelemetryMetadata>({
   stale_fields: [],
 })
 
+/** Wall clock updated by refreshTelemetryQuality so ESS freshness re-renders. */
+export const telemetryClockMs = shallowRef(Date.now())
+
 export function refreshTelemetryQuality(now = Date.now()) {
+  // Always advance the reactive clock so bindings that depend on wall time
+  // (ESS command freshness) re-evaluate even when quality/stale_fields are unchanged.
+  telemetryClockMs.value = now
   const previous = telemetry.value
   const staleFields = Object.keys(previous.fields).filter(
     (field) => now - previous.fields[field].observed_at > TELEMETRY_STALE_AFTER_MS
@@ -205,6 +213,7 @@ const GATEWAY_OWNED_FIELDS = [
   'booleans',
   'dry_run',
   'ess_mode',
+  'ess_mode_observed_at',
   'ui_config',
   'features',
   'version',
@@ -258,6 +267,11 @@ export function applyInverterState(
   if (newState.grid_backup === null) {
     delete merged.grid_backup
     merged.grid_using_backup = false
+  }
+  // Retained inverter/state clears the command gate; do not hold a prior live stamp.
+  if (Object.prototype.hasOwnProperty.call(newState, 'ess_mode_observed_at')) {
+    if (newState.ess_mode_observed_at == null) delete merged.ess_mode_observed_at
+    else merged.ess_mode_observed_at = newState.ess_mode_observed_at
   }
   // Cerbo explicitly publishes null for unavailable/unused grid phases. Keep
   // ordinary partial-message holding, but never resurrect an invalid phase

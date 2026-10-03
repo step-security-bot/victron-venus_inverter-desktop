@@ -69,4 +69,17 @@ describe('applyInverterState merge', () => {
     expect(state.value).not.toBe(first)
     expect(state.value.gt).toBe(200)
   })
+
+  it('clears ess_mode_observed_at on retained null so the menu cannot stay writable', () => {
+    applyInverterState({
+      ess_mode: { selection_supported: true, selected: 'external_control' },
+      ess_mode_observed_at: 1700000000,
+    })
+    expect(state.value.ess_mode_observed_at).toBe(1700000000)
+    applyInverterState({
+      ess_mode: { selection_supported: true, selected: 'external_control' },
+      ess_mode_observed_at: null,
+    })
+    expect(state.value.ess_mode_observed_at).toBeUndefined()
+  })
 })

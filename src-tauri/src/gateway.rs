@@ -6,6 +6,7 @@ use crate::mqtt::{
     inverter_state_name, voltage_soc, Battery, DiscoveredInstance, InverterState, MpptCharger,
     PvInverter, SetpointOverrideStatus,
 };
+use chrono::Utc;
 use log::{info, warn};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -442,6 +443,13 @@ fn map_controller(snap: &GatewaySnapshot, st: &mut InverterState) {
     );
     st.dry_run = controller.get("dry_run").and_then(bool_value);
     st.ess_mode = serde_json::from_value(field("ess_mode")).ok();
+    // Local observation time for the frontend ESS command gate (field is
+    // skip_deserializing on InverterState). Live IGW polls stamp here; cached
+    // invalidate clears below. Does not weaken the MQTT publish_command gate.
+    st.ess_mode_observed_at = st
+        .ess_mode
+        .as_ref()
+        .map(|_| Utc::now().timestamp_millis() as f64 / 1000.0);
     st.ui_config = serde_json::from_value(field("ui_config")).ok();
     st.features = serde_json::from_value(field("features")).ok();
     st.version = serde_json::from_value(field("version")).ok();
@@ -473,6 +481,7 @@ fn invalidate_gateway_controls(st: &mut InverterState) {
     st.booleans = empty.booleans;
     st.dry_run = None;
     st.ess_mode = None;
+    st.ess_mode_observed_at = None;
     st.ui_config = None;
     st.features = None;
     st.grid_backup = None;
@@ -1496,6 +1505,22 @@ mod tests {
         assert_eq!(state.grid_backup.as_ref().unwrap().power, Some(123.0));
         assert_eq!(state.grid_using_backup, Some(false));
         assert_eq!(state.setpoint_override.as_ref().unwrap().value, Some(100));
+    }
+
+    #[test]
+    fn live_igw_controller_stamps_ess_mode_observed_at() {
+        let snap = complete_snapshot();
+        let state = snapshot_to_state(&snap);
+        assert!(state.ess_mode.is_some());
+        let observed = state
+            .ess_mode_observed_at
+            .expect("live IGW must stamp local observation");
+        assert!(observed.is_finite() && observed > 0.0);
+        // Cached invalidate must clear the stamp so UI cannot stay writable.
+        let mut cleared = state.clone();
+        invalidate_gateway_controls(&mut cleared);
+        assert!(cleared.ess_mode.is_none());
+        assert!(cleared.ess_mode_observed_at.is_none());
     }
 
     #[test]
