@@ -38,6 +38,7 @@ class ReleasePluginPackageTests(unittest.TestCase):
             target.parent.mkdir(parents=True)
             target.write_bytes((CHECKOUT / "desktop-plugins" / plugin / "Cargo.toml").read_bytes())
         self.commands = []
+        self.implicit_host = None
 
     def simulate_command(self, root, arguments):
         """Emit executable headers for staging and a stand-in archive for hashing."""
@@ -49,8 +50,12 @@ class ReleasePluginPackageTests(unittest.TestCase):
             self.assertIn("--release", args)
             if "--bin" in args:
                 binary = args[args.index("--bin") + 1]
-                target = args[args.index("--target") + 1]
-                worker = self.root / "src-tauri/target" / target / "release" / (
+                target = (args[args.index("--target") + 1]
+                          if "--target" in args else self.implicit_host)
+                directory = self.root / "src-tauri/target"
+                if "--target" in args:
+                    directory /= target
+                worker = directory / "release" / (
                     binary + (".exe" if "windows" in target else ""))
                 worker.parent.mkdir(parents=True, exist_ok=True)
                 worker.write_bytes(executable_fixture(target))
@@ -64,10 +69,42 @@ class ReleasePluginPackageTests(unittest.TestCase):
         with zipfile.ZipFile(output, "x") as archive:
             archive.writestr("manifest.json", manifest.read_bytes())
 
-    def build(self, target="aarch64-apple-darwin", host="aarch64-apple-darwin"):
+    def build(self, target="aarch64-apple-darwin", host="aarch64-apple-darwin",
+              *, implicit_native=False):
         """Exercise the complete orchestrator without invoking an executable."""
+        self.implicit_host = host if implicit_native else None
         with patch.object(release, "run", side_effect=self.simulate_command):
-            return release.build_plugins(self.root, self.plan, "example/inverter", target, host)
+            return release.build_plugins(self.root, self.plan, "example/inverter",
+                                         target, host, implicit_native=implicit_native)
+
+    def test_native_packaging_reuses_installer_layout_and_keeps_asset_identity(self):
+        """Native Windows/Linux builds reuse dependencies without changing public pins."""
+        for host in ("x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"):
+            with self.subTest(host=host):
+                self.commands = []
+                paths = self.build(host, host, implicit_native=True)
+                commands = self.commands
+                for command in commands:
+                    if command[0] == "cargo":
+                        self.assertNotIn("--target", command)
+                    else:
+                        suffix = ".exe" if "windows" in host else ""
+                        self.assertEqual(Path(command[0]), self.root / "src-tauri" /
+                                         "target/release/examples" / ("plugin-package" + suffix))
+                fragment = json.loads(paths[-1].read_text(encoding="utf-8"))
+                for plugin in fragment["desktop_plugins"]:
+                    self.assertEqual(list(plugin["artifacts"]), [host])
+                    self.assertIn(host + ".idplugin", plugin["artifacts"][host]["url"])
+                self.assertEqual(len(paths), 2 * len(release.plugin_package.PLUGINS) + 1)
+
+    def test_implicit_layout_cannot_silently_select_a_cross_target(self):
+        """Cross-compilation must retain explicit Cargo target selection."""
+        with patch.object(release, "run") as command:
+            with self.assertRaisesRegex(ValueError, "compiler host"):
+                release.build_plugins(self.root, self.plan, "example/inverter",
+                                      "x86_64-apple-darwin", "aarch64-apple-darwin",
+                                      implicit_native=True)
+            command.assert_not_called()
 
     def test_every_desktop_target_produces_exact_pins_and_collision_free_names(self):
         """The platform artifacts can be flattened into one GitHub release."""

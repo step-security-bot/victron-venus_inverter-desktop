@@ -72,20 +72,28 @@ def encode_json(value):
 
 # Each target produces the registered workers and one host-native packaging utility.
 # pylint: disable=too-many-locals
-def build_plugins(root, plan, repository, target, host):
+def build_plugins(root, plan, repository, target, host, *, implicit_native=False):
     """Create target-unique release assets without overwriting an existing artifact."""
     target = desktop_target(target)
     host = desktop_target(host)
+    if implicit_native and target != host:
+        raise ValueError("Implicit native builds require the compiler host target")
     repository_name(repository)
     version_plan.validate_plan(plan)
     output = root / "release-output" / "desktop"
     output.mkdir(parents=True, exist_ok=True)
     plugin_package.checked_path(output)
     target_dir = root / "src-tauri" / "target"
+    # Windows/Linux installers use Cargo's native layout. Reuse their dependency
+    # artifacts instead of rebuilding the same crate graph under <host>/release.
+    host_args = [] if implicit_native else ["--target", host]
+    worker_args = [] if implicit_native else ["--target", target]
     run(root, ["cargo", "build", "--locked", "--release", "--manifest-path",
                root / "src-tauri/Cargo.toml", "--example", "plugin-package",
-               "--target", host, "--target-dir", target_dir])
-    packager = target_dir / host / "release/examples" / (
+               *host_args, "--target-dir", target_dir])
+    host_directory = target_dir if implicit_native else target_dir / host
+    worker_directory = target_dir if implicit_native else target_dir / target
+    packager = host_directory / "release/examples" / (
         "plugin-package.exe" if "windows" in host else "plugin-package")
     declarations = []
     published = []
@@ -97,9 +105,9 @@ def build_plugins(root, plan, repository, target, host):
             if package["name"] != binary:
                 raise ValueError("Worker Cargo identity does not match package metadata")
             run(root, ["cargo", "build", "--locked", "--release", "--manifest-path",
-                       worker_manifest, "--bin", binary, "--target", target,
+                       worker_manifest, "--bin", binary, *worker_args,
                        "--target-dir", target_dir])
-            worker = target_dir / target / "release" / (
+            worker = worker_directory / "release" / (
                 binary + (".exe" if "windows" in target else ""))
             prepared = plugin_package.prepare(worker, target, staging / plugin, plugin)
             metadata = json.loads((prepared / "manifest.json").read_text(encoding="utf-8"))
@@ -140,7 +148,8 @@ def main():
         plan = load_release_plan(ROOT)
         repository = repository_name(args.repository)
         host = compiler_host(ROOT)
-        paths = build_plugins(ROOT, plan, repository, args.target or host, host)
+        paths = build_plugins(ROOT, plan, repository, args.target or host, host,
+                              implicit_native=args.target is None)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Cannot build release plugins: {error}\n")
     for path in paths:
