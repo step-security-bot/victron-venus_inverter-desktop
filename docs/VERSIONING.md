@@ -23,6 +23,13 @@ PR for that version. Without `--pr`, the declared source files are edited locall
 No command commits unrelated files, pushes the default branch, or creates a
 public release. Normal project checks still apply to the preparation PR.
 
+After the stable tag for a committed base exists, automatic push betas report
+`version-required` before allocating a plan or building packages. The full quality
+and security checks still run, and their failures still fail the release gate.
+No candidate is published. Prepare and merge the next base version to resume beta
+publication. Explicit beta/RC requests still reject an occupied stable base;
+scheduled nightlies keep their existing behavior.
+
 Only owned fields change: JSON/TOML fields, the named package's lock entries,
 text versions, declared Python constants, and native configuration fields.
 Unrelated dependencies and independently versioned components are preserved.
@@ -94,6 +101,26 @@ if it already created the stable tag, that immutable tag also prevents a same-ba
 retry. Investigate the partial publication before preparing a new base. Removing
 the ledger file from an existing state branch fails closed.
 
+## Automatic nightly publication reuse
+
+Versioned repositories still allocate a fresh plan and run all required checks,
+current security scans and the complete nightly build matrix. This preserves
+coverage of mutable base images, downloaded packages and hosted toolchains even
+when the source commit is unchanged. After the Release gate and new build receipts
+pass, a scheduled nightly can report `reused` instead of publishing duplicate
+GitHub release assets. It requires a published beta, RC or stable with the exact
+same source, policy and base version, successful originating CI/Release gates,
+retained immutable Actions evidence, and matching asset sizes and digests.
+
+Only publication is skipped: the new build artifacts remain in Actions under
+normal adapter retention. No new release/tag or promotion evidence is created,
+and the publication floor stays unchanged so this nightly does not invalidate the
+accepted RC. The allocated build number remains reserved; gaps are intentional.
+Manual nightly requests, new sources, and missing, expired or unverifiable prior
+evidence follow normal publication. Failed current checks/builds still fail the
+run. This does not reset an existing floor or restore an already obsolete RC;
+those still require a new RC. Legacy repositories retain their existing behavior.
+
 ## Checking the packages
 
 Each platform performs its package-specific metadata checks, then stages its
@@ -113,8 +140,16 @@ the installed scripts; Git metadata, symlink escapes and existing output files
 are rejected. The receipt also rechecks declared source-file hashes after packaging.
 It records installed compiler/runtime versions and GitHub runner image identifiers
 per platform; final-build compares
-these with the accepted RC and rejects toolchain drift. Floating runner/toolchain
-updates therefore require a fresh RC instead of silently changing final inputs.
+these with the accepted RC and rejects toolchain drift. Failure diagnostics cover
+all platform receipts in deterministic order, with field paths, missing fields
+and changed types; receipt values are withheld. Diagnostics show at most 100 field
+differences, count any omitted differences, and redact unsafe or oversized labels.
+Receipt inventory, byte integrity and JSON failures still stop verification.
+Floating runner image rollouts can give successive jobs different `ImageVersion`
+values, so a new RC alone does not guarantee matching final-build inputs. Inspect
+the verified RC and final receipts and runner/toolchain availability before
+starting another RC/final cycle. Exact equality remains required for publication;
+the diagnostic does not permit dropping fields or overriding the receipt.
 It additionally reads all metadata targets declared in `versioning.artifacts`;
 each declared pattern must match a real package in the complete matrix.
 

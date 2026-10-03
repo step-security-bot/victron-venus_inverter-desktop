@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,53 @@ SPEC.loader.exec_module(rc)
 REPO = "example/project"
 SHA = "a" * 40
 RC_TAG = "v1.2.3-rc.2"
+
+
+class AutomaticBetaPreparationTests(unittest.TestCase):
+    """An occupied base skips only automatic builds, never explicit requests."""
+
+    def test_existing_stable_tag_closes_only_push_cycle(self):
+        gh = Mock()
+        gh.api.return_value = {
+            "ref": "refs/tags/v1.2.3",
+            "object": {"type": "commit", "sha": SHA},
+        }
+        result = rc.closed_push_cycle(gh, "1.2.3", "push")
+        self.assertEqual(result["status"], "version-required")
+        self.assertEqual(result["build"], "false")
+        self.assertEqual(result["version"], "1.2.3")
+        gh.api.assert_called_once_with("git/ref/tags/v1.2.3")
+        for kind in ("workflow_dispatch", "schedule"):
+            gh.reset_mock()
+            self.assertIsNone(rc.closed_push_cycle(gh, "1.2.3", kind))
+            gh.api.assert_not_called()
+
+    def test_missing_tag_continues_but_api_errors_cannot_authorize_skip(self):
+        gh = rc.GitHub(REPO)
+        with patch.object(gh, "api", side_effect=rc.GitHubError("HTTP 404", True)):
+            self.assertIsNone(rc.closed_push_cycle(gh, "1.2.3", "push"))
+        for message in ("HTTP 401", "HTTP 403", "HTTP 429", "HTTP 500"):
+            with (
+                self.subTest(message=message),
+                patch.object(gh, "api", side_effect=rc.GitHubError(message)),
+                self.assertRaisesRegex(rc.GitHubError, message),
+            ):
+                rc.closed_push_cycle(gh, "1.2.3", "push")
+
+    def test_malformed_or_wrong_tag_response_fails_closed(self):
+        gh = Mock()
+        for ref in (
+            None,
+            {},
+            [],
+            {"ref": "refs/tags/v1.2.4", "object": {"type": "commit", "sha": SHA}},
+        ):
+            gh.api.return_value = ref
+            with (
+                self.subTest(ref=ref),
+                self.assertRaisesRegex(rc.ReleaseError, "Invalid stable tag"),
+            ):
+                rc.closed_push_cycle(gh, "1.2.3", "push")
 
 
 def policy():
@@ -122,6 +170,17 @@ class FakeGitHub:
         self.info = {"full_name": REPO, "default_branch": "main"}
         self.runs = {17: run(), 99: run(99, False)}
         self.default_head = SHA
+        self.github_directories = {
+            sha: [
+                {
+                    "name": "workflows",
+                    "path": ".github/workflows",
+                    "type": "dir",
+                    "sha": "c" * 40,
+                }
+            ]
+            for sha in (SHA, "b" * 40)
+        }
         self.successors = []
         self.source_policies = {SHA: policy()}
         self.policy_reads = []
@@ -212,6 +271,11 @@ class FakeGitHub:
                 "total_count": len(self.successors),
                 "workflow_runs": deepcopy(self.successors),
             }
+        if path.startswith("contents/.github?ref="):
+            sha = path.split("?ref=", 1)[1]
+            if sha not in self.github_directories:
+                raise rc.GitHubError("HTTP 404", True)
+            return deepcopy(self.github_directories[sha])
         if path.startswith(f"contents/{rc.POLICY}?ref="):
             sha = path.split("?ref=", 1)[1]
             self.policy_reads.append(sha)
@@ -372,6 +436,22 @@ class ReleaseControlTests(unittest.TestCase):
             ("git/refs", "POST", {"ref": "refs/tags/v1.2.3", "sha": SHA}),
         )
         self.assertEqual(self.gh.writes[-1][1], "PATCH")
+
+    def test_workflow_drift_rejects_promotion_without_stranding_stable_tag(self):
+        """Known historical-workflow denial must not consume the stable identity."""
+        self.gh.default_head = "b" * 40
+        self.gh.github_directories[self.gh.default_head][0]["sha"] = "d" * 40
+        with patch.object(
+            self.gh, "download_asset", wraps=self.gh.download_asset
+        ) as download:
+            self.reject_promotion()
+        download.assert_not_called()
+        self.assertNotIn("v1.2.3", self.gh.refs)
+
+    def test_older_rc_with_identical_workflows_keeps_exact_candidate_bytes(self):
+        """Unrelated source changes do not prevent promotion of an accepted RC."""
+        self.gh.default_head = "b" * 40
+        self.test_promote_copies_exact_candidate_bytes_then_publishes_latest()
 
     def test_promotion_waits_for_fresh_active_run_and_keeps_rc_bytes(self):
         """A stale post-approval status delays, rather than bypasses, promotion."""
@@ -801,7 +881,8 @@ class PublicationPermissionTests(unittest.TestCase):
             patch.dict(os.environ, {"RELEASE_REQUIRE_WORKFLOW_SCOPE": ""}),
             patch.object(rc.subprocess, "run") as command,
         ):
-            rc.GitHub(REPO)
+            gh = rc.GitHub(REPO)
+        self.assertFalse(gh.workflow_scope_verified)
         command.assert_not_called()
 
     def test_scoped_classic_token_probe_is_read_only_and_secret_safe(self):
@@ -820,7 +901,9 @@ class PublicationPermissionTests(unittest.TestCase):
                     rc.subprocess, "run", return_value=self.probe(scopes)
                 ) as command,
             ):
-                rc.GitHub(REPO)
+                gh = rc.GitHub(REPO)
+                self.assertTrue(gh.workflow_scope_verified)
+                rc.check_workflow_publication(gh, SHA)
             self.assertEqual(command.call_count, 1)
             self.assertEqual(
                 command.call_args.args[0],
@@ -877,6 +960,21 @@ class PublicationPermissionTests(unittest.TestCase):
             rc.GitHub(REPO)
         command.assert_not_called()
 
+    def test_failed_reprobe_clears_previous_workflow_authorization(self):
+        """A previously scoped client cannot retain authorization after a failed probe."""
+        with (
+            patch.dict(
+                os.environ,
+                {"GH_TOKEN": "test-secret", "RELEASE_REQUIRE_WORKFLOW_SCOPE": "true"},
+            ),
+            patch.object(rc.subprocess, "run", return_value=self.probe()) as command,
+        ):
+            gh = rc.GitHub(REPO)
+            command.return_value = self.probe("repo")
+            with self.assertRaises(rc.ReleaseError):
+                gh.verify_publication_permissions()
+            self.assertFalse(gh.workflow_scope_verified)
+
     def test_probe_failure_does_not_print_payload_or_auth_diagnostics(self):
         """The permission probe never returns raw potentially sensitive diagnostics."""
         response = subprocess.CompletedProcess(
@@ -915,6 +1013,99 @@ class PublicationPermissionTests(unittest.TestCase):
             gh.api("git/refs", "POST", {"private": "request body"})
         self.assertIn("POST repos/example/project/git/refs: ", str(error.exception))
         self.assertNotIn("private", str(error.exception))
+
+
+class WorkflowPublicationTests(unittest.TestCase):
+    """Check historical-source permission preflight without performing writes."""
+
+    def setUp(self):
+        self.gh = FakeGitHub()
+        self.gh.default_head = "b" * 40
+
+    def test_current_source_does_not_download_workflow_inventories(self):
+        """The common current-HEAD path needs only repository and ref metadata."""
+        with patch.object(self.gh, "api", wraps=self.gh.api) as read:
+            rc.check_workflow_publication(self.gh, self.gh.default_head)
+        self.assertEqual(
+            [call.args[0] for call in read.call_args_list], ["", "git/ref/heads/main"]
+        )
+        self.assertEqual(self.gh.writes, [])
+
+    def test_workflow_directory_metadata_must_be_regular_and_unambiguous(self):
+        """Missing, replaced and truncated directory inventories fail closed."""
+        original = self.gh.github_directories[SHA][0]
+        cases = (
+            [],
+            {},
+            [None],
+            [original, original],
+            [original] * 1000,
+            [{**original, "type": "symlink"}],
+            [{**original, "type": "file"}],
+            [{**original, "name": "other"}],
+            [{**original, "path": ".github/other"}],
+            [{**original, "sha": "main"}],
+            [{**original, "sha": None}],
+        )
+        for sha in (SHA, self.gh.default_head):
+            for entries in cases:
+                with self.subTest(sha=sha, entries=entries):
+                    self.gh.github_directories[sha] = entries
+                    with self.assertRaises(rc.ReleaseError):
+                        rc.check_workflow_publication(self.gh, SHA)
+                    self.assertEqual(self.gh.writes, [])
+            self.gh.github_directories[sha] = [original]
+
+    def test_missing_directory_and_transport_errors_do_not_mean_equal_trees(self):
+        """A missing API resource cannot stand in for an empty workflow tree."""
+        original = self.gh.api
+        for error in (rc.GitHubError("HTTP 404", True), rc.GitHubError("HTTP 403")):
+            with self.subTest(error=str(error)):
+
+                def failed_directory(path, method="GET", body=None, failure=error):
+                    if path.startswith("contents/.github?"):
+                        raise failure
+                    return original(path, method, body)
+
+                with patch.object(self.gh, "api", side_effect=failed_directory):
+                    with self.assertRaises(rc.GitHubError):
+                        rc.check_workflow_publication(self.gh, SHA)
+                self.assertEqual(self.gh.writes, [])
+
+    def test_branch_change_during_workflow_lookup_is_rejected(self):
+        """The immutable tree comparison must still describe the fresh branch head."""
+        original = self.gh.api
+
+        def advanced(path, method="GET", body=None):
+            result = original(path, method, body)
+            if path == f"contents/.github?ref={'b' * 40}":
+                self.gh.default_head = "d" * 40
+            return result
+
+        with patch.object(self.gh, "api", side_effect=advanced):
+            with self.assertRaisesRegex(rc.ReleaseError, "changed during publication"):
+                rc.check_workflow_publication(self.gh, SHA)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_environment_flag_alone_does_not_authorize_historical_workflows(self):
+        """Only the successful token probe can grant the existing exception."""
+        self.gh.github_directories[self.gh.default_head][0]["sha"] = "d" * 40
+        with patch.dict(os.environ, {"RELEASE_REQUIRE_WORKFLOW_SCOPE": "true"}):
+            with self.assertRaisesRegex(rc.ReleaseError, "workflows differ"):
+                rc.check_workflow_publication(self.gh, SHA)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_publish_boundary_rechecks_before_creating_a_tag(self):
+        """A branch advance after the earlier check cannot strand a public tag."""
+        rc.check_workflow_publication(self.gh, SHA)
+        self.gh.github_directories[self.gh.default_head][0]["sha"] = "d" * 40
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            (stage / "package.bin").write_bytes(b"accepted bytes")
+            with self.assertRaisesRegex(rc.ReleaseError, "workflows differ"):
+                rc.publish(self.gh, "v1.2.3", SHA, stage, False, "")
+        self.assertEqual(self.gh.writes, [])
+        self.assertNotIn("v1.2.3", self.gh.refs)
 
 
 class TransportTests(unittest.TestCase):
@@ -1000,6 +1191,7 @@ class TransportTests(unittest.TestCase):
             "actions/runs/17/attempts/2/jobs",
             "actions/artifacts/40/zip",
             f"contents/{rc.POLICY}?ref={SHA}",
+            f"contents/.github?ref={SHA}",
             f"compare/{SHA}...feature%2Fbranch",
         ]
         with patch.object(
@@ -1076,6 +1268,52 @@ class TransportTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 check=False,
+            )
+
+    def test_upload_parse_failure_keeps_draft_and_reports_safe_asset_context(self):
+        """A committed upload with a broken response must not be retried or published."""
+        gh = FakeGitHub()
+        client = rc.GitHub(REPO)
+        tag = "v1.2.3-beta.7"
+
+        def accepted_upload_then_failed_response(upload_tag, path):
+            FakeGitHub.upload(gh, upload_tag, path)
+            client.upload(upload_tag, path)
+
+        with tempfile.TemporaryDirectory(prefix="release-versioned-") as temp:
+            asset = Path(temp) / rc.MANIFEST
+            asset.write_bytes(b"private package bytes")
+            with (
+                patch.dict(os.environ, {"GH_TOKEN": "private-token-fixture"}),
+                patch.object(
+                    gh, "upload", side_effect=accepted_upload_then_failed_response
+                ),
+                patch.object(
+                    rc.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 1, b"private response body", b"unexpected end of JSON input"
+                    ),
+                ) as command,
+                self.assertRaises(rc.GitHubError) as error,
+            ):
+                rc.publish(gh, tag, SHA, Path(temp), True, "private release body")
+            release_id = next(
+                key
+                for key, release in gh.releases.items()
+                if release["tag_name"] == tag
+            )
+            self.assertTrue(gh.releases[release_id]["draft"])
+            self.assertEqual(len(gh.assets[release_id]), 1)
+            self.assertEqual(sum(write[0] == "upload" for write in gh.writes), 1)
+            self.assertFalse(any(write[1] == "PATCH" for write in gh.writes))
+            command.assert_called_once()
+            self.assertNotIn("--clobber", command.call_args.args[0])
+            self.assertNotIn(temp, str(error.exception))
+            self.assertNotIn("private", str(error.exception))
+            self.assertEqual(
+                str(error.exception),
+                f"upload {tag} {asset.name}: unexpected end of JSON input",
             )
 
     def test_canonical_numeric_fields_remain_ascii(self):
@@ -1503,10 +1741,11 @@ class ExecutingRunStatusTests(unittest.TestCase):
                 {"conclusion": "failure"},
                 {"run_attempt": 2},
             ):
+                candidate = {**run(), **change}
                 with self.subTest(change=change), self.assertRaises(rc.ReleaseError):
                     rc.validate_run(
                         self.gh,
-                        {**run(), **change},
+                        candidate,
                         self.gh.info,
                         SHA,
                         1,
@@ -1686,6 +1925,115 @@ class SupersededCandidateTests(unittest.TestCase):
         ):
             with self.assertRaises(rc.ReleaseError):
                 client.api(invalid)
+
+
+class AtomicOutputTests(unittest.TestCase):
+    """Output replacement must preserve aliases and never publish partial bytes."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.output = self.root / "evidence.json"
+        self.before = b"existing output\n"
+        self.after = b'{"verified":"exact bytes"}\n'
+
+    def test_create_and_overwrite_preserve_exact_bytes_and_existing_mode(self):
+        rc.atomic_write_bytes(self.output, self.before)
+        if os.name == "posix":
+            self.assertEqual(self.output.stat().st_mode & 0o777, 0o600)
+        self.output.chmod(0o640)
+        rc.atomic_write_bytes(self.output, self.after)
+        self.assertEqual(self.output.read_bytes(), self.after)
+        self.assertEqual(rc.digest(self.output.read_bytes()), rc.digest(self.after))
+        if os.name == "posix":
+            self.assertEqual(self.output.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(list(self.root.iterdir()), [self.output])
+
+    def test_hardlink_replacement_preserves_other_name_and_bytes(self):
+        original = self.root / "outside.json"
+        original.write_bytes(self.before)
+        os.link(original, self.output)
+        rc.atomic_write_bytes(self.output, self.after)
+        self.assertEqual(original.read_bytes(), self.before)
+        self.assertEqual(self.output.read_bytes(), self.after)
+        self.assertNotEqual(original.stat().st_ino, self.output.stat().st_ino)
+        self.assertEqual(original.stat().st_nlink, 1)
+
+    def test_symlink_dangling_symlink_directory_and_fifo_fail_closed(self):
+        original = self.root / "outside.json"
+        original.write_bytes(self.before)
+        kinds = ["symlink", "dangling", "directory"]
+        if hasattr(os, "mkfifo"):
+            kinds.append("fifo")
+        for kind in kinds:
+            with self.subTest(kind=kind):
+                output = self.root / kind
+                if kind == "directory":
+                    output.mkdir()
+                elif kind == "fifo":
+                    os.mkfifo(output)
+                else:
+                    output.symlink_to(
+                        original if kind == "symlink" else self.root / "missing"
+                    )
+                with self.assertRaisesRegex(ValueError, "plain file"):
+                    rc.atomic_write_bytes(output, self.after)
+                self.assertEqual(original.read_bytes(), self.before)
+                self.assertFalse((self.root / "missing").exists())
+                self.assertEqual(list(self.root.glob(".release-output-*")), [])
+
+    def test_failed_write_flush_or_replace_preserves_old_output_and_cleans_staging(
+        self,
+    ):
+        original_fdopen = os.fdopen
+
+        @contextmanager
+        def partial_write(fd, mode):
+            with original_fdopen(fd, mode) as handle:
+
+                def fail(data):
+                    handle.write(data[:5])
+                    raise OSError("injected partial write")
+
+                writer = Mock(wraps=handle)
+                writer.write.side_effect = fail
+                yield writer
+
+        for operation, replacement in (
+            ("fdopen", partial_write),
+            ("fsync", OSError("injected flush failure")),
+            ("replace", OSError("injected replacement failure")),
+        ):
+            with self.subTest(operation=operation):
+                self.output.write_bytes(self.before)
+                with (
+                    patch.object(rc.os, operation, side_effect=replacement),
+                    self.assertRaises(OSError),
+                ):
+                    rc.atomic_write_bytes(self.output, self.after)
+                self.assertEqual(self.output.read_bytes(), self.before)
+                self.assertEqual(list(self.root.iterdir()), [self.output])
+
+    def test_symlink_inserted_during_staging_is_rejected_without_target_write(self):
+        original = self.root / "outside.json"
+        original.write_bytes(self.before)
+        self.output.write_bytes(b"old output")
+        fsync = os.fsync
+
+        def swap(fd):
+            fsync(fd)
+            self.output.unlink()
+            self.output.symlink_to(original)
+
+        with (
+            patch.object(rc.os, "fsync", side_effect=swap),
+            self.assertRaisesRegex(ValueError, "plain file"),
+        ):
+            rc.atomic_write_bytes(self.output, self.after)
+        self.assertTrue(self.output.is_symlink())
+        self.assertEqual(original.read_bytes(), self.before)
+        self.assertEqual(list(self.root.glob(".release-output-*")), [])
 
 
 if __name__ == "__main__":

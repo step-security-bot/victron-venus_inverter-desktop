@@ -24,11 +24,61 @@ from release_state import (
     StateGitHub,
     begin_publication,
     reserve_plan,
+    read_state,
     verify_reservation,
 )
 from version_receipt import verify_declared_artifacts, verify_receipts
 
 PLAN = Path(".release-plan.json")
+MAX_TOOLCHAIN_DIAGNOSTICS = 100
+
+
+def diagnostic_label(value):
+    """Keep receipt names/field paths bounded and free of log control syntax."""
+    if re.fullmatch(r"[A-Za-z0-9_./~-]{1,200}", value, re.ASCII):
+        return value
+    return "redacted-sha256-" + rc.digest(value.encode("utf-8", "surrogatepass"))
+
+
+def toolchain_changes(original, current):
+    """Describe unequal JSON fields deterministically without logging values."""
+    missing = object()
+    pending = [("toolchain", original, current)]
+    while pending:
+        path, before, after = pending.pop()
+        if before is missing:
+            yield path, "missing in accepted RC"
+        elif after is missing:
+            yield path, "missing in final build"
+        elif before == after:
+            continue
+        elif type(before) is not type(after):
+            yield (
+                path,
+                f"type changed ({type(before).__name__} -> {type(after).__name__})",
+            )
+        elif isinstance(before, dict):
+            for key in sorted(before.keys() | after.keys(), reverse=True):
+                pending.append(
+                    (
+                        diagnostic_label(
+                            path + "/" + key.replace("~", "~0").replace("/", "~1")
+                        ),
+                        before.get(key, missing),
+                        after.get(key, missing),
+                    )
+                )
+        elif isinstance(before, list):
+            for index in reversed(range(max(len(before), len(after)))):
+                pending.append(
+                    (
+                        diagnostic_label(f"{path}/{index}"),
+                        before[index] if index < len(before) else missing,
+                        after[index] if index < len(after) else missing,
+                    )
+                )
+        else:
+            yield path, "value changed"
 
 
 def context(gh, channel, gate=False):
@@ -102,18 +152,19 @@ def verified_rc(gh, tag, info, current_run):
         {item["name"] for item in assets} == set(expected) | {rc.MANIFEST},
         "RC asset inventory differs from immutable evidence",
     )
-    for item in assets:
-        data = (
-            raw
-            if item["name"] == rc.MANIFEST
-            else gh.binary(f"releases/assets/{rc.positive(item['id'], 'asset ID')}")
-        )
-        rc.require(item["size"] == len(data), "RC asset size mismatch")
-        if item["name"] != rc.MANIFEST:
+    rc.require(manifests[0]["size"] == len(raw), "RC asset size mismatch")
+    with tempfile.TemporaryDirectory(prefix="verified-rc-") as temp:
+        payload = Path(temp) / "payload"
+        for item in assets:
+            if item["name"] == rc.MANIFEST:
+                continue
+            identity = rc.download_asset(gh, item["id"], payload)
+            payload.unlink()
+            rc.require(item["size"] == identity["size"], "RC asset size mismatch")
             declaration = expected[item["name"]]
             rc.require(
-                len(data) == declaration["size"]
-                and rc.digest(data) == declaration["sha256"],
+                identity["size"] == declaration["size"]
+                and identity["sha256"] == declaration["sha256"],
                 f"RC payload checksum mismatch: {item['name']}",
             )
     rc.require(
@@ -137,8 +188,10 @@ def event_inputs() -> dict:
     return event.get("inputs") or {}
 
 
+# Keep integrity checks and mismatch accumulation together at the trust boundary.
+# pylint: disable-next=too-many-locals
 def verify_final_toolchains(gh, candidate, receipts):
-    """A floating runner/toolchain update requires a fresh RC, not an untested final."""
+    """Reject exact toolchain drift after checking every platform receipt's bytes."""
     _, _, assets = rc.release_snapshot(gh, candidate["tag"])
     inventory = {item["name"]: item for item in assets}
     expected = {item["name"]: item for item in candidate.get("build_receipts", [])}
@@ -146,7 +199,9 @@ def verify_final_toolchains(gh, candidate, receipts):
         set(expected) == {item["name"] for item in receipts},
         "Final platform receipt inventory differs from RC",
     )
-    for current in receipts:
+    differences = []
+    fields = platforms = 0
+    for current in sorted(receipts, key=lambda item: item["name"]):
         name = current["name"]
         rc.require(name in inventory, "RC platform receipt is missing")
         raw = gh.binary(
@@ -155,11 +210,176 @@ def verify_final_toolchains(gh, candidate, receipts):
         rc.require(
             rc.digest(raw) == expected[name]["sha256"], "RC toolchain receipt changed"
         )
-        original = rc.parse_json(raw, "RC toolchain receipt")
+        try:
+            original = rc.parse_json(raw, "RC toolchain receipt")
+        except rc.ReleaseError:
+            # Duplicate JSON keys can contain arbitrary text; do not echo them.
+            raise rc.ReleaseError("Invalid JSON in RC toolchain receipt") from None
         rc.require(
-            original.get("toolchain") == current["inputs"].get("toolchain"),
-            f"Build toolchain differs from accepted RC for {name}; create a new RC",
+            isinstance(original, dict) and isinstance(current.get("inputs"), dict),
+            "Invalid toolchain receipt object",
         )
+        before = original.get("toolchain")
+        after = current["inputs"].get("toolchain")
+        # This exact equality remains the acceptance predicate. Diagnostics must
+        # never normalize, drop or otherwise reinterpret receipt fields.
+        if before == after:
+            continue
+        platforms += 1
+        for path, change in toolchain_changes(before, after):
+            fields += 1
+            if len(differences) < MAX_TOOLCHAIN_DIAGNOSTICS:
+                differences.append(f"  {diagnostic_label(name)}: {path}: {change}")
+    if platforms:
+        omitted = fields - len(differences)
+        if omitted:
+            differences.append(
+                f"  {omitted} further field differences omitted (log limit)"
+            )
+        raise rc.ReleaseError(
+            f"Build toolchain differs from accepted RC: {platforms} platform receipt(s), "
+            f"{fields} field difference(s).\n"
+            + "\n".join(differences)
+            + "\nValues are withheld; inspect the verified RC/final receipts. "
+            "Floating runner image rollouts can give successive jobs different "
+            "ImageVersion values. Investigate runner/toolchain availability before "
+            "another RC/final cycle; a new RC alone does not guarantee matching inputs. "
+            "Exact equality is still required for publication."
+        )
+
+
+def published_plan_snapshot(gh, tag, source, prerelease):
+    """Read a published versioned package without downloading its payloads."""
+    ref = gh.api(f"git/ref/tags/{tag}")
+    release = gh.api(f"releases/tags/{tag}")
+    rc.require(
+        ref.get("ref") == f"refs/tags/{tag}"
+        and ref.get("object", {}).get("type") == "commit"
+        and ref.get("object", {}).get("sha") == source,
+        "Qualified release tag/source mismatch",
+    )
+    rc.require(
+        release.get("tag_name") == tag
+        and release.get("draft") is False
+        and release.get("prerelease") is prerelease,
+        "Qualified release is not published",
+    )
+    assets = gh.pages(f"releases/{rc.positive(release.get('id'), 'release ID')}/assets")
+    names = [asset.get("name") for asset in assets]
+    rc.require(
+        all(isinstance(name, str) and rc.NAME_RE.fullmatch(name) for name in names)
+        and len(names) == len({name.casefold() for name in names})
+        and all(asset.get("state") == "uploaded" for asset in assets),
+        "Qualified release has invalid or incomplete assets",
+    )
+    return ref, release, assets
+
+
+# Keep all evidence comparisons together at this read-only reuse boundary.
+# pylint: disable-next=too-many-locals,too-many-arguments,too-many-positional-arguments
+def verify_scheduled_reuse(gh, info, snapshot, plan, source_run_id, tag):
+    """Require retained immutable evidence and matching published asset metadata."""
+    initial = published_plan_snapshot(
+        gh, tag, plan["source_sha"], tag != f"v{plan['base_version']}"
+    )
+    identity = rc.snapshot_identity(initial)
+    inventory = {asset["name"]: asset for asset in initial[2]}
+    asset = inventory[rc.MANIFEST]
+    rc.require(asset["size"] <= 2_000_000, "Qualified manifest is too large")
+    raw = gh.binary(f"releases/assets/{rc.positive(asset['id'], 'manifest ID')}")
+    manifest = rc.parse_json(raw, "qualified manifest")
+    rc.require(
+        isinstance(manifest, dict)
+        and isinstance(manifest.get("schema"), int)
+        and not isinstance(manifest["schema"], bool)
+        and manifest["schema"] == 1
+        and manifest.get("repository") == gh.repo
+        and manifest.get("source_sha") == plan["source_sha"]
+        and manifest.get("version") == plan["base_version"]
+        and manifest.get("channel") == plan["channel"]
+        and manifest.get("tag") == plan["tag"]
+        and manifest.get("version_plan") == plan
+        and manifest.get("plan_sha256") == version_plan.plan_digest(plan)
+        and manifest.get("source_policy") == snapshot
+        and manifest.get("workflow_path") == rc.WORKFLOW
+        and manifest.get("run_id") == source_run_id,
+        "Qualified manifest differs from its source and durable plan",
+    )
+    expected = manifest.get("assets")
+    rc.require(isinstance(expected, list) and expected, "Qualified payloads missing")
+    declarations = {entry["name"]: entry for entry in expected}
+    rc.require(
+        len(declarations) == len(expected)
+        and set(inventory) == set(declarations) | {rc.MANIFEST},
+        "Qualified asset inventory mismatch",
+    )
+    declarations[rc.MANIFEST] = {"size": len(raw), "sha256": rc.digest(raw)}
+    rc.require(
+        all(
+            inventory[name].get("size") == entry["size"]
+            and inventory[name].get("digest") == "sha256:" + entry["sha256"]
+            for name, entry in declarations.items()
+        ),
+        "Qualified asset metadata mismatch",
+    )
+    source_run = gh.api(f"actions/runs/{source_run_id}")
+    rc.require(source_run.get("id") == source_run_id, "Qualified run ID mismatch")
+    attempt = rc.positive(manifest.get("run_attempt"), "qualified run attempt")
+    rc.validate_run(
+        gh, source_run, info, plan["source_sha"], attempt, completed=True, gate=False
+    )
+    jobs = gh.pages(f"actions/runs/{source_run_id}/attempts/{attempt}/jobs", "jobs")
+    for names in (("Release gate",), ("CI gate", "checks / CI gate")):
+        gates = [job for job in jobs if job.get("name") in names]
+        rc.require(
+            len(gates) == 1
+            and gates[0].get("status") == "completed"
+            and gates[0].get("conclusion") == "success"
+            and gates[0].get("head_sha") == plan["source_sha"],
+            "Qualified run has no successful CI and Release gates",
+        )
+    rc.verify_evidence(gh, manifest, raw)
+    current = published_plan_snapshot(
+        gh, tag, plan["source_sha"], tag != f"v{plan['base_version']}"
+    )
+    rc.require(
+        rc.snapshot_identity(current) == identity,
+        "Qualified release changed during verification",
+    )
+
+
+def scheduled_reuse(gh, info, run, snapshot, base):
+    """Find proved same-input publication after fresh scheduled checks and builds."""
+    head_path = "git/ref/heads/" + rc.quote(info["default_branch"], safe="")
+    if gh.api(head_path).get("object", {}).get("sha") != run["head_sha"]:
+        return ""
+    ledger, _ = read_state(gh)
+    records = [
+        (rc.positive(key, "reserved run"), record["plan"])
+        for key, record in ledger["plans"].items()
+        if record["plan"]["source_sha"] == run["head_sha"]
+        and record["plan"]["base_version"] == base
+        and record["plan"]["policy_sha256"]
+        == version_plan.policy_digest(snapshot["data"])
+        and record["plan"]["channel"] in {"beta", "rc", "stable"}
+    ]
+    # Bound remote probes even when a source has many abandoned reservations.
+    for source_run_id, plan in sorted(
+        records, key=lambda item: item[1]["build_number"], reverse=True
+    )[:10]:
+        tags = [plan["tag"]]
+        if plan["channel"] == "rc" and plan["promotion"] == "promote-bytes":
+            tags.append(f"v{base}")
+        for tag in tags:
+            try:
+                verify_scheduled_reuse(gh, info, snapshot, plan, source_run_id, tag)
+            except (rc.ReleaseError, ValueError, KeyError, TypeError):
+                # Missing, expired or unprovable releases never authorize a skip.
+                continue
+            if gh.api(head_path).get("object", {}).get("sha") == run["head_sha"]:
+                return tag
+            return ""
+    return ""
 
 
 def prepare(args):
@@ -222,6 +442,9 @@ def prepare(args):
     else:
         base = client.resolve_version(policy, inputs.get("version", ""))
     version_plan.check_base_versions(Path.cwd(), policy, base)
+    closed = rc.closed_push_cycle(gh, base, kind)
+    if closed:
+        return closed
     if channel in {"beta", "rc", "stable"}:
         rc.ensure_absent(gh, f"v{base}")
     plan = reserve_plan(
@@ -321,6 +544,17 @@ def publish_versioned(args):
         superseded = rc.superseded_candidate(gh, info, run, channel)
         if superseded:
             return superseded
+        rc.check_workflow_publication(gh, plan["source_sha"])
+        if channel == "nightly" and run["event"] == "schedule":
+            reused = scheduled_reuse(gh, info, run, snapshot, plan["base_version"])
+            if reused:
+                return {
+                    "status": "reused",
+                    "tag": reused,
+                    "reason": (
+                        "Qualified same-input release; fresh nightly checks and builds passed"
+                    ),
+                }
         rc.EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
         rc.EVIDENCE.write_bytes(content)
         begin_publication(gh, plan, run["id"], parent)

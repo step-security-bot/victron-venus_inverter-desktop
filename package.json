@@ -25,8 +25,8 @@
     "@tauri-apps/plugin-notification": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2.7.0",
     "@tauri-apps/plugin-store": "^2",
-    "@univerjs/preset-sheets-core": "1.0.2",
-    "@univerjs/presets": "1.0.2",
+    "@univerjs/preset-sheets-core": "1.0.3",
+    "@univerjs/presets": "1.0.3",
     "echarts": "^6.1.0",
     "vue": "^3.5.43",
     "vue-echarts": "^8.3.1",
@@ -44,7 +44,7 @@
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.3",
     "vite": "^8.3.1",
-    "vitest": "^4.1.8",
+    "vitest": "^5.0.2",
     "vue-tsc": "^3.3.11"
   }
 }
