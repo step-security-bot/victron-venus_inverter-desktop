@@ -27,21 +27,16 @@ updates:
       - dependency-name: typescript
         versions: ['7.x']
 
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: daily
-
-    groups:
-      codeql:
-        patterns:
-          - github/codeql-action/*
-      toolkit-automation:
-        applies-to: version-updates
-        patterns:
-          - victron-venus/venus-os-ci-toolkit/.github/workflows/auto-approve-reusable.yml
-          - victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:
       interval: daily
+  # Renovate owns CI updates. The ignore rule also prevents separate
+  # Dependabot security-update PRs; vulnerability alerts remain enabled.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: '*'

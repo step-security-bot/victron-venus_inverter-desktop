@@ -20,7 +20,7 @@ concurrency:
 jobs:
   auto-merge:
     if: contains(fromJSON('["4alvit","californiantiramisu","dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login)
-    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml@fadf720a452d216f81c60ee74096febd63c0caec
+    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml@fadf720a452d216f81c60ee74096febd63c0caec # main
     with:
       native-auto-merge: true
       required-status-checks: CodeQL,SonarCloud Code Analysis,cargo-deny
