@@ -4,10 +4,11 @@ on:
   workflow_call: {}
 permissions:
   contents: read
-  security-events: write
-
 jobs:
   cargo-deny:
+    permissions:
+      contents: read
+      security-events: write
     name: Cargo Deny Check
     runs-on: ubuntu-latest
     timeout-minutes: 30
