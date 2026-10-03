@@ -10,27 +10,9 @@ targets = [
 
 [advisories]
 # ttf-parser (via ab_glyph): unmaintained, no upstream fix yet
-# unic-* crates (via urlpattern in tauri): unmaintained, no upstream fix yet
-# gtk-rs GTK3 bindings (via tauri's Linux tray-icon dependency chain): unmaintained, no safe upgrade available
 # proc-macro-error (transitive dependency): unmaintained, no safe upgrade available
-# derivative (via zbus/secret-service/keyring): unmaintained, no safe upgrade available
 ignore = [
     "RUSTSEC-2026-0192", # ttf-parser: unmaintained (via ab_glyph)
-    "RUSTSEC-2025-0081", # unic-char-property: unmaintained (via urlpattern/tauri)
-    "RUSTSEC-2025-0075", # unic-char-range: unmaintained (via urlpattern/tauri)
-    "RUSTSEC-2025-0080", # unic-common: unmaintained (via urlpattern/tauri)
-    "RUSTSEC-2025-0100", # unic-ucd-ident: unmaintained (via urlpattern/tauri)
-    "RUSTSEC-2025-0098", # unic-ucd-version: unmaintained (via urlpattern/tauri)
-    "RUSTSEC-2024-0413", # atk: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0416", # atk-sys: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0412", # gdk: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0418", # gdk-sys: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0411", # gdkwayland-sys: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0417", # gdkx11: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0414", # gdkx11-sys: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0415", # gtk: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0420", # gtk-sys: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
-    "RUSTSEC-2024-0419", # gtk3-macros: unmaintained gtk-rs GTK3 binding (via tauri/tray-icon, Linux)
     "RUSTSEC-2024-0370", # proc-macro-error: unmaintained (transitive dependency)
 ]
 
