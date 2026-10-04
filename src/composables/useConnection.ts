@@ -176,7 +176,7 @@ export function useConnection() {
     if (current !== session || !inverterEnabled) return
     mqttOnlyReconnectAttempt = 0
     stopMqttRecoveryProbe()
-    if (note) notify(note.title, note.body)
+    if (note) void notify(note.title, note.body)
   }
 
   async function startIgw(config: AppConfig, note?: { title: string; body: string }) {
@@ -188,7 +188,7 @@ export function useConnection() {
     refreshTelemetryQuality()
     await invokeTransport('connect_gateway', gatewayConnectArgs(config))
     if (current !== session || !inverterEnabled) return
-    if (note) notify(note.title, note.body)
+    if (note) void notify(note.title, note.body)
   }
 
   async function connectMqtt() {
@@ -432,7 +432,7 @@ export function useConnection() {
     if (mqttReconnectTimer) clearTimeout(mqttReconnectTimer)
     mqttReconnectTimer = setTimeout(() => {
       mqttReconnectTimer = null
-      connectMqtt()
+      void connectMqtt()
     }, delay)
   }
 

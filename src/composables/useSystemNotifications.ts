@@ -27,9 +27,9 @@ export function initSystemNotifications(
     const prev = prevEvChargingKw.value
     if (prev !== null && prev !== undefined) {
       if (prev === 0 && val > 0) {
-        notify('EV Charging Started', `Charging at ${val.toFixed(1)} kW`)
+        void notify('EV Charging Started', `Charging at ${val.toFixed(1)} kW`)
       } else if (prev > 0 && val === 0) {
-        notify('EV Charging Stopped', 'Charging has ended')
+        void notify('EV Charging Stopped', 'Charging has ended')
       }
     }
     prevEvChargingKw.value = val
@@ -39,7 +39,7 @@ export function initSystemNotifications(
     if (val === null || val === undefined) return
     const prev = prevWaterValve.value
     if (prev !== null && prev !== undefined && val !== prev) {
-      notify('Water Valve', val ? 'Valve OPENED' : 'Valve CLOSED')
+      void notify('Water Valve', val ? 'Valve OPENED' : 'Valve CLOSED')
     }
     prevWaterValve.value = val
   })
@@ -48,7 +48,7 @@ export function initSystemNotifications(
     if (val === null || val === undefined) return
     const prev = prevPumpSwitch.value
     if (prev !== null && prev !== undefined && val !== prev) {
-      notify('Water Pump', val ? 'Pump ON' : 'Pump OFF')
+      void notify('Water Pump', val ? 'Pump ON' : 'Pump OFF')
     }
     prevPumpSwitch.value = val
   })
