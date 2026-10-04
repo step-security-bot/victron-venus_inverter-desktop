@@ -191,6 +191,8 @@ jobs:
           sudo apt-get install -y libssl-dev
       - name: Init Android project
         run: pnpm tauri android init --ci
+      - name: Test combined Android package graph
+        run: python3 -m unittest discover -s tests -p test_android_gradle_graph.py -v
       - name: Fingerprint Android NDK installations
         id: ndk-cache
         shell: bash
@@ -206,7 +208,9 @@ jobs:
           env-vars: CARGO CC CFLAGS CXX CMAKE RUST ANDROID NDK
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build Android
-        run: pnpm tauri android build --ci
+        env:
+          ORG_GRADLE_PROJECT_inverterAndroidBothPackages: 'true'
+        run: pnpm tauri android build --ci --apk
       - name: Verify 64-bit Android load and RELRO alignment
         run: python3 scripts/android/check_native_alignment.py src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
       - name: Verify packaged Android excludes desktop features

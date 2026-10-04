@@ -88,3 +88,4 @@ dependencies {
 }
 
 apply(from = "tauri.build.gradle.kts")
+apply(from = "release-packages.gradle.kts")

@@ -304,7 +304,8 @@ jobs:
         if: matrix.type == 'android'
         env:
           TAURI_APP_VERSION: ${{ inputs.version }}
-        run: pnpm tauri android build --ci
+          ORG_GRADLE_PROJECT_inverterAndroidBothPackages: 'true'
+        run: pnpm tauri android build --ci --apk
       - name: Android – verify release bundle native alignment
         if: matrix.type == 'android'
         run: python3 scripts/android/check_native_alignment.py src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
