@@ -66,50 +66,22 @@ jobs:
           cargo run --locked --manifest-path src-tauri/Cargo.toml --example plugin-media-smoke --features native-media-smoke -- --help
       - name: Build the real Frigate worker package payload
         run: cargo build --release --locked --manifest-path desktop-plugins/frigate/Cargo.toml
-      - name: Exercise signed Frigate motion and live preview ownership with private MQTT fixtures
-        env:
-          INVERTER_FRIGATE_WORKER: ${{ github.workspace }}/desktop-plugins/frigate/target/release/inverter-frigate-worker
-          MOSQUITTO_BIN: /usr/sbin/mosquitto
-        run: |
-          for frigate_test in signed_frigate_package_real_mqtt_lifecycle signed_frigate_package_real_mqtt_live_lifecycle; do
-            cargo test --locked --manifest-path src-tauri/Cargo.toml --lib \
-              "plugins::frigate_integration_tests::$frigate_test" \
-              -- --exact --ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/$frigate_test.log"
-            # A renamed/missing test must not turn acceptance into a zero-test pass.
-            grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/$frigate_test.log"
-          done
       - name: Build the real Home Assistant worker package payload
         run: cargo build --release --locked --manifest-path desktop-plugins/home-assistant/Cargo.toml
-      - name: Exercise signed Home Assistant reads and actions with private HTTP, WebSocket and MQTT fixtures
-        env:
-          INVERTER_HOME_ASSISTANT_WORKER: ${{ github.workspace }}/desktop-plugins/home-assistant/target/release/inverter-home-assistant-worker
-          MOSQUITTO_BIN: /usr/sbin/mosquitto
-        run: |
-          for ha_test in signed_home_assistant_package_lifecycle signed_home_assistant_package_actions signed_home_assistant_package_media signed_home_assistant_package_binary signed_home_assistant_package_cover signed_home_assistant_package_numeric signed_home_assistant_package_discovery signed_home_assistant_package_legacy_migration; do
-            cargo test --locked --manifest-path src-tauri/Cargo.toml --lib \
-              "plugins::home_assistant_integration_tests::$ha_test" \
-              -- --exact --ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/$ha_test.log"
-            # Missing fixture paths or a zero-test selection are acceptance failures.
-            grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/$ha_test.log"
-          done
-
       - name: Build the real Kerberos and Ring worker payloads
         run: |
           cargo build --release --locked --manifest-path desktop-plugins/kerberos/Cargo.toml
           cargo build --release --locked --manifest-path desktop-plugins/ring/Cargo.toml
-      - name: Exercise installed camera packages with private MQTT and HTTP fixtures
+      - name: Verify acceptance runner contracts with real Cargo
+        run: python3 -m unittest discover -s tests -p 'test_ci_acceptance_runner.py'
+      - name: Exercise all 13 isolated signed-package acceptance scenarios
         env:
+          INVERTER_FRIGATE_WORKER: ${{ github.workspace }}/desktop-plugins/frigate/target/release/inverter-frigate-worker
+          INVERTER_HOME_ASSISTANT_WORKER: ${{ github.workspace }}/desktop-plugins/home-assistant/target/release/inverter-home-assistant-worker
           INVERTER_KERBEROS_WORKER: ${{ github.workspace }}/desktop-plugins/kerberos/target/release/inverter-kerberos-worker
           INVERTER_RING_WORKER: ${{ github.workspace }}/desktop-plugins/ring/target/release/inverter-ring-worker
           MOSQUITTO_BIN: /usr/sbin/mosquitto
-        run: |
-          for camera_test in signed_kerberos_package_real_mqtt_lifecycle signed_kerberos_package_mqtt_url_preview_lifecycle signed_ring_package_real_mqtt_snapshot_lifecycle; do
-            cargo test --locked --manifest-path src-tauri/Cargo.toml --lib \
-              "plugins::camera_integration_tests::$camera_test" \
-              -- --exact --ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/$camera_test.log"
-            # Missing workers, fixture endpoints, or tests must fail acceptance.
-            grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/$camera_test.log"
-          done
+        run: python3 scripts/run-ci-acceptance.py
 
   apple-tls:
     name: Apple TLS trust regressions
