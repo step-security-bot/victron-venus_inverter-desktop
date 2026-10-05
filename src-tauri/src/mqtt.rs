@@ -1008,7 +1008,7 @@ pub struct MqttClient {
 }
 
 /// Notification pushed by inverter-control on {prefix}/notifications.
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
 pub struct MqttNotification {
     pub id: String,
     pub level: String,
@@ -1029,7 +1029,7 @@ pub struct MqttNotification {
 /// those live on separate battery paths (System/MaxCellVoltage,
 /// System/MaxVoltageCellId, Cell/*/Voltage) and are not in this payload.
 #[derive(Debug, Clone, Default)]
-struct PlatformNotifSlot {
+pub(crate) struct PlatformNotifSlot {
     platform_instance: u32,
     slot: u32,
     description: Option<String>,
@@ -1049,6 +1049,51 @@ struct PlatformNotifSlot {
 }
 
 impl PlatformNotifSlot {
+    fn apply_field(&mut self, field: &str, json: &serde_json::Value) {
+        match field {
+            "Description" => self.description = MqttClient::json_value_string(json),
+            "DeviceName" => self.device_name = MqttClient::json_value_string(json),
+            "Service" => self.service = MqttClient::json_value_string(json),
+            "DateTime" => {
+                let next = MqttClient::json_value_i64(json);
+                // New event in a recycled slot — allow the banner again.
+                if next.is_some() && next != self.date_time {
+                    self.user_dismissed = false;
+                }
+                self.date_time = next;
+            }
+            "Type" => self.notif_type = MqttClient::json_value_i64(json),
+            "Active" => {
+                self.active = MqttClient::json_value_bool(json);
+                // Condition cleared — next Active=true is a fresh alarm.
+                if self.active == Some(false) {
+                    self.user_dismissed = false;
+                }
+            }
+            "Acknowledged" => self.acknowledged = MqttClient::json_value_bool(json),
+            "Silenced" => self.silenced = MqttClient::json_value_bool(json),
+            _ => {}
+        }
+    }
+
+    /// A complete HTTP snapshot can arrive in any field order. Assemble the slot
+    /// before rendering, so Acknowledged=true never flashes a historical alarm.
+    pub(crate) fn from_gateway_fields(
+        platform_instance: u32,
+        slot: u32,
+        fields: &HashMap<String, serde_json::Value>,
+    ) -> Self {
+        let mut result = Self {
+            platform_instance,
+            slot,
+            ..Default::default()
+        };
+        for (field, value) in fields {
+            result.apply_field(field, &serde_json::json!({ "value": value }));
+        }
+        result
+    }
+
     fn banner_id(&self) -> String {
         format!("victron-platform-{}-{}", self.platform_instance, self.slot)
     }
@@ -1070,7 +1115,7 @@ impl PlatformNotifSlot {
         !desc.is_empty()
     }
 
-    fn to_notification(&self) -> Option<MqttNotification> {
+    pub(crate) fn to_notification(&self) -> Option<MqttNotification> {
         if !self.should_show() {
             return None;
         }
@@ -2127,30 +2172,7 @@ impl MqttClient {
             });
             entry.platform_instance = inst;
             entry.slot = slot;
-            match field {
-                "Description" => entry.description = Self::json_value_string(&json),
-                "DeviceName" => entry.device_name = Self::json_value_string(&json),
-                "Service" => entry.service = Self::json_value_string(&json),
-                "DateTime" => {
-                    let next = Self::json_value_i64(&json);
-                    // New event in a recycled slot — allow the banner again.
-                    if next.is_some() && next != entry.date_time {
-                        entry.user_dismissed = false;
-                    }
-                    entry.date_time = next;
-                }
-                "Type" => entry.notif_type = Self::json_value_i64(&json),
-                "Active" => {
-                    entry.active = Self::json_value_bool(&json);
-                    // Condition cleared — next Active=true is a fresh alarm.
-                    if entry.active == Some(false) {
-                        entry.user_dismissed = false;
-                    }
-                }
-                "Acknowledged" => entry.acknowledged = Self::json_value_bool(&json),
-                "Silenced" => entry.silenced = Self::json_value_bool(&json),
-                _ => {}
-            }
+            entry.apply_field(field, &json);
             entry.clone()
         };
 

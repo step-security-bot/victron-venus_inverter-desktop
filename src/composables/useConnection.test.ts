@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defaultConfig } from '../config'
 import { useConnection } from './useConnection'
+import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
+import NotificationBanner from '../components/NotificationBanner.vue'
 import {
   dataSource,
   mqttConnected,
@@ -8,6 +11,8 @@ import {
   telemetry,
   resetInverterState,
   TELEMETRY_STALE_AFTER_MS,
+  bannerNotifications,
+  notifications,
 } from './useInverterState'
 
 const boundary = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), getConfig: vi.fn() }))
@@ -59,6 +64,8 @@ beforeEach(() => {
     return () => callbacks.delete(callback)
   })
   resetInverterState()
+  bannerNotifications.value = []
+  notifications.value = []
   mqttConnected.value = false
   connection = useConnection()
 })
@@ -79,6 +86,49 @@ async function connectAndDisable() {
 }
 
 describe('inverter transport configuration lifecycle', () => {
+  it('renders native Victron banners delivered over IGW and clears an acknowledged slot', async () => {
+    boundary.getConfig.mockResolvedValue({
+      ...disabled(),
+      gateway_enabled: true,
+      gateway_url: 'https://igw.example',
+    })
+    await connection.connectMqtt()
+    expect(dataSource.value).toBe('igw')
+    const wrapper = mount(NotificationBanner, { global: { mocks: { $t: (key: string) => key } } })
+    try {
+      for (const [slot, title, body] of [
+        [11, 'Internal failure', 'JBD Battery Chain 1'],
+        [12, 'Internal failure', 'JBD Battery Chain 1'],
+        [13, 'Low battery voltage', 'Quattro'],
+      ] as const) {
+        emit('mqtt-notification', {
+          id: `victron-platform-0-${slot}`,
+          title,
+          body,
+          level: 'alarm',
+          source: 'victron',
+          ts: '2026-10-04T21:02:10Z',
+        })
+      }
+      await nextTick()
+      expect(wrapper.text()).toContain('Low battery voltage')
+      expect(wrapper.text().match(/Internal failure/g)).toHaveLength(2)
+      expect(wrapper.findAll('button')).toHaveLength(3)
+      expect(notifications.value).toHaveLength(3)
+      emit('mqtt-notification-clear', { id: 'victron-platform-0-13' })
+      await nextTick()
+      expect(wrapper.text()).not.toContain('Low battery voltage')
+      expect(wrapper.findAll('button')).toHaveLength(2)
+      expect(notifications.value).toHaveLength(3)
+      expect(boundary.invoke).not.toHaveBeenCalledWith(
+        'acknowledge_victron_banner',
+        expect.anything()
+      )
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it.each([null, undefined, '', '  '])(
     'connects native IGW with Rust string arguments when Access is %s',
     async (empty) => {

@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
+mod notifications;
+
 const POLL_INTERVAL_SECS: u64 = 2;
 
 /// Gateway credentials require HTTPS, including when connecting directly to the origin.
@@ -122,6 +124,9 @@ pub struct GatewaySnapshot {
     pub evcharger: HashMap<String, Value>,
     #[serde(default)]
     pub acload: HashMap<String, Value>,
+    /// GUIv2 notification slots, including inactive but unacknowledged alarms.
+    #[serde(default)]
+    pub platform: HashMap<String, Value>,
     #[serde(default)]
     #[allow(dead_code)]
     pub settings: HashMap<String, Value>,
@@ -970,6 +975,7 @@ pub(crate) fn start_gateway_client(
         };
 
         let mut connected_emitted = false;
+        let mut notifications = notifications::GatewayNotifications::default();
         let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -988,6 +994,15 @@ pub(crate) fn start_gateway_client(
             .await
             {
                 Ok(snap) => {
+                    // Reconcile only a successful authoritative snapshot. A failed
+                    // poll must neither clear outstanding alarms nor replay them.
+                    let changes = notifications.update(&snap.platform);
+                    for notification in changes.upsert {
+                        let _ = app.emit("mqtt-notification", notification);
+                    }
+                    for id in changes.clear {
+                        let _ = app.emit("mqtt-notification-clear", json!({ "id": id }));
+                    }
                     let mut mapped = snapshot_to_state_with_instances(&snap, instances);
                     if let Ok(mut g) = state_c.lock() {
                         preserve_battery_time_to_go(&g, &mut mapped);
