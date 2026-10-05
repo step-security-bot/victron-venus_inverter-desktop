@@ -40,13 +40,20 @@ export function formatDuration(s: number | undefined): string {
   return m + ':' + String(sec).padStart(2, '0')
 }
 
+/** An absent/invalid source time is unknown, not the time we received a replay. */
+export function notificationTimestampMs(tsString: string | undefined): number | null {
+  const timestamp = tsString ? Date.parse(tsString) : NaN
+  return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null
+}
+
 /** Relative age matching Victron GUIv2 style (e.g. "10h 16m ago"). */
-export function formatTimestamp(tsString: string | undefined): string {
-  if (!tsString) return ''
-  const timestamp = new Date(tsString)
-  if (Number.isNaN(timestamp.getTime())) return ''
-  const diffMs = Date.now() - timestamp.getTime()
-  if (diffMs < 0) return 'just now'
+export function formatTimestamp(tsString: string | undefined, now = Date.now()): string {
+  const ms = notificationTimestampMs(tsString)
+  if (ms === null) return ''
+  const timestamp = new Date(ms)
+  const diffMs = now - ms
+  // Clock skew must not turn a future source timestamp into a new event.
+  if (diffMs < 0) return timestamp.toLocaleString(undefined, { timeZoneName: 'short' })
   const diffSec = Math.floor(diffMs / 1000)
   if (diffSec < 60) return 'just now'
   const diffMin = Math.floor(diffSec / 60)

@@ -1135,9 +1135,12 @@ impl PlatformNotifSlot {
             .to_string();
         let ts = self
             .date_time
+            .filter(|secs| *secs > 0)
             .and_then(|secs| Utc.timestamp_opt(secs, 0).single())
             .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| Utc::now().to_rfc3339());
+            // MQTT fields arrive separately. Keep the alarm visible while its
+            // DateTime is missing, without presenting an old replay as new.
+            .unwrap_or_default();
         Some(MqttNotification {
             id: self.banner_id(),
             level: self.level().to_string(),
@@ -1837,11 +1840,7 @@ impl MqttClient {
             }
         } else if topic == "inverter/notifications" {
             match serde_json::from_str::<MqttNotification>(payload) {
-                Ok(mut notification) => {
-                    // Ensure timestamp is present (add if missing)
-                    if notification.ts.is_empty() {
-                        notification.ts = Utc::now().to_rfc3339();
-                    }
+                Ok(notification) => {
                     if let Some(ref handle) = app_handle {
                         let _ = handle.emit("mqtt-notification", &notification);
                         // Mirror to OS notification like local alerts
@@ -2306,7 +2305,8 @@ impl MqttClient {
                     title,
                     body,
                     source: "victron".to_string(),
-                    ts: Utc::now().to_rfc3339(),
+                    // Raw Alarms/* carries a value, not the event's DateTime.
+                    ts: String::new(),
                 },
             );
         }
@@ -2481,7 +2481,8 @@ impl MqttClient {
                         title,
                         body,
                         source: "victron".to_string(),
-                        ts: Utc::now().to_rfc3339(),
+                        // Retained raw alarm values have no event timestamp.
+                        ts: String::new(),
                     },
                 );
             } else {
@@ -3281,8 +3282,47 @@ mod tests {
         assert_eq!(n.title, "High voltage");
         assert_eq!(n.body, "JBD Battery Chain 1");
         assert_eq!(n.level, "alarm");
-        assert!(n.ts.contains("2023-"), "unexpected ts {}", n.ts);
+        assert_eq!(n.ts, "2023-11-14T22:13:20+00:00");
         assert_eq!(n.id, "victron-platform-0-2");
+    }
+
+    #[test]
+    fn platform_slot_partial_replay_never_substitutes_receipt_time() {
+        let mut slot = PlatformNotifSlot::default();
+        slot.apply_field(
+            "Description",
+            &serde_json::json!({"value": "Internal failure"}),
+        );
+        assert!(slot.to_notification().unwrap().ts.is_empty());
+        slot.apply_field("DateTime", &serde_json::json!({"value": 1_791_226_020}));
+        let timestamp = slot.to_notification().unwrap().ts;
+        assert_eq!(timestamp, "2026-10-05T18:47:00+00:00");
+        for (field, value) in [
+            ("Active", serde_json::json!(false)),
+            ("Acknowledged", serde_json::json!(false)),
+            ("DeviceName", serde_json::json!("JBD Battery Chain 1")),
+        ] {
+            slot.apply_field(field, &serde_json::json!({"value": value}));
+            assert_eq!(slot.to_notification().unwrap().ts, timestamp);
+        }
+    }
+
+    #[test]
+    fn platform_slot_invalid_datetime_stays_unknown_instead_of_becoming_new() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(i64::MAX),
+            serde_json::json!("invalid"),
+        ] {
+            let mut slot = PlatformNotifSlot {
+                description: Some("Internal failure".into()),
+                ..Default::default()
+            };
+            slot.apply_field("DateTime", &serde_json::json!({"value": value}));
+            assert!(slot.to_notification().unwrap().ts.is_empty(), "{value}");
+        }
     }
 
     #[test]

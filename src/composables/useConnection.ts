@@ -14,6 +14,7 @@ import {
   shouldWatchdogFailoverToIgw,
 } from '../connectionPolicy'
 import { logger } from '../logger'
+import { notificationTimestampMs } from '../utils'
 import {
   addNotification,
   appConfig,
@@ -387,7 +388,11 @@ export function useConnection() {
       await listenForSession<TransportEvent<BannerNotification>>('mqtt-notification', (event) => {
         if (!acceptsNotification(event.payload)) return
         upsertBanner(event.payload)
-        addNotification(event.payload.title, event.payload.body)
+        addNotification(
+          event.payload.title,
+          event.payload.body,
+          notificationTimestampMs(event.payload.ts)
+        )
       })
 
       await listenForSession<TransportEvent<{ id: string }>>('mqtt-notification-clear', (event) => {

@@ -126,6 +126,42 @@ async function connectAndDisable() {
 }
 
 describe('inverter transport configuration lifecycle', () => {
+  it.each(['mqtt', 'igw'])(
+    'keeps the Victron event time through a %s reconnect instead of using receipt time',
+    async (source) => {
+      vi.setSystemTime(new Date('2026-10-05T20:02:00Z'))
+      boundary.getConfig.mockResolvedValue(source === 'mqtt' ? configured() : igwConfig())
+      await connection.connectMqtt()
+      const eventTime = '2026-10-05T18:47:00+00:00'
+      const alarm = { ...nativeAlarm(), ts: eventTime }
+      const wrapper = mount(NotificationBanner, { global: { mocks: { $t: (key: string) => key } } })
+      try {
+        emitCurrentNotification('mqtt-notification', alarm)
+        await nextTick()
+        expect(wrapper.get('time').text()).toBe('1h 15m ago')
+        expect(notifications.value[0]?.timestamp).toBe(Date.parse(eventTime))
+        await connection.connectMqtt()
+        emitCurrentNotification('mqtt-notification', alarm)
+        await nextTick()
+        expect(wrapper.get('time').text()).toBe('1h 15m ago')
+        expect(notifications.value[0]?.timestamp).toBe(Date.parse(eventTime))
+        // A partially replayed slot has unknown time until its DateTime arrives.
+        emitCurrentNotification('mqtt-notification', { ...alarm, ts: '' })
+        await nextTick()
+        expect(wrapper.text()).not.toContain('just now')
+        expect(notifications.value[0]?.timestamp).toBeNull()
+        emitCurrentNotification('mqtt-notification', alarm)
+        await nextTick()
+        expect(wrapper.get('time').text()).toBe('1h 15m ago')
+        expect(notifications.value[0]?.timestamp).toBe(Date.parse(eventTime))
+        emitCurrentNotification('notification', { title: 'Local event', body: 'Occurred here' })
+        expect(notifications.value[0]?.timestamp).toBe(Date.now())
+      } finally {
+        wrapper.unmount()
+      }
+    }
+  )
+
   it('repopulates native banners across automatic MQTT/IGW failover and recovery', async () => {
     boundary.getConfig.mockResolvedValue({
       ...configured(),

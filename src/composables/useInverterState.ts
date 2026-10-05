@@ -360,7 +360,7 @@ export interface NotificationEntry {
   id: number
   title: string
   body: string
-  timestamp: number
+  timestamp: number | null
   read: boolean
 }
 
@@ -369,9 +369,13 @@ const MAX_NOTIFICATIONS = 100
 
 export const notifications = ref<NotificationEntry[]>([])
 
-export function addNotification(title: string, body: string) {
+export function addNotification(
+  title: string,
+  body: string,
+  timestamp: number | null = Date.now()
+) {
   notifications.value = [
-    { id: ++notifId.value, title, body, timestamp: Date.now(), read: false },
+    { id: ++notifId.value, title, body, timestamp, read: false },
     ...notifications.value,
   ].slice(0, MAX_NOTIFICATIONS)
 }

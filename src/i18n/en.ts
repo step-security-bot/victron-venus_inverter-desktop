@@ -51,6 +51,7 @@ export default {
     markAllRead: 'Mark all read',
     clear: 'Clear',
     dismiss: 'Dismiss',
+    timeUnavailable: 'Event time unavailable',
   },
   chart: {
     grid: 'Grid',

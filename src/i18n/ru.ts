@@ -35,5 +35,6 @@ export default {
     markAllRead: 'Отметить все прочитанными',
     clear: 'Очистить',
     dismiss: 'Закрыть',
+    timeUnavailable: 'Время события неизвестно',
   },
 }
