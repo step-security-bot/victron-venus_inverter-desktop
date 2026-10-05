@@ -474,3 +474,10 @@ export function upsertBanner(notification: BannerNotification) {
 export function clearBanner(id: string) {
   bannerNotifications.value = bannerNotifications.value.filter((b) => b.id !== id)
 }
+
+/** A replaced transport must repopulate native alarms from its own source. */
+export function clearVictronPlatformBanners() {
+  bannerNotifications.value = bannerNotifications.value.filter(
+    (banner) => !banner.id.startsWith('victron-platform-')
+  )
+}

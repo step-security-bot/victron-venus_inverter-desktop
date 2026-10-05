@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defaultConfig } from '../config'
+import { MQTT_OFFLINE_DELAY_MS, MQTT_RECOVERY_PROBE_MS } from '../connectionPolicy'
 import { useConnection } from './useConnection'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
@@ -86,6 +87,85 @@ async function connectAndDisable() {
 }
 
 describe('inverter transport configuration lifecycle', () => {
+  it('repopulates native banners across automatic MQTT/IGW failover and recovery', async () => {
+    boundary.getConfig.mockResolvedValue({
+      ...configured(),
+      gateway_enabled: true,
+      gateway_url: 'https://igw.example',
+    })
+    await connection.connectMqtt()
+    emit('mqtt-connection-status', true)
+    const alarm = {
+      id: 'victron-platform-0-1',
+      title: 'Native alarm',
+      body: 'Battery',
+      level: 'alarm',
+      source: 'victron',
+      ts: '2026-10-04T21:02:10Z',
+    }
+    emit('mqtt-notification', alarm)
+    emit('mqtt-connection-status', false)
+    await vi.advanceTimersByTimeAsync(MQTT_OFFLINE_DELAY_MS)
+    expect(dataSource.value).toBe('igw')
+    expect(bannerNotifications.value).toHaveLength(0)
+    emit('mqtt-notification', alarm)
+    expect(bannerNotifications.value).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(MQTT_RECOVERY_PROBE_MS)
+    expect(dataSource.value).toBe('mqtt')
+    expect(bannerNotifications.value).toHaveLength(0)
+    emit('mqtt-notification', alarm)
+    expect(bannerNotifications.value).toHaveLength(1)
+    expect(boundary.invoke.mock.calls.some(([name]) => name === 'acknowledge_victron_banner')).toBe(
+      false
+    )
+  })
+
+  it.each(['replace-gateway', 'switch-mqtt', 'disable', 'cleanup'])(
+    'clears native banners on %s without dismissing alarms or erasing history',
+    async (change) => {
+      const gateway = {
+        ...disabled(),
+        gateway_enabled: true,
+        gateway_url: 'https://old-igw.example',
+      }
+      boundary.getConfig.mockResolvedValue(gateway)
+      await connection.connectMqtt()
+      const alarm = {
+        id: 'victron-platform-0-1',
+        title: 'Native alarm',
+        body: 'Battery',
+        level: 'alarm',
+        source: 'victron',
+        ts: '2026-10-04T21:02:10Z',
+      }
+      emit('mqtt-notification', alarm)
+      emit('mqtt-notification', { ...alarm, id: 'controller-1', source: 'controller' })
+      emit('mqtt-connection-status', false)
+      expect(bannerNotifications.value).toHaveLength(2)
+      if (change === 'cleanup') connection.cleanup()
+      else {
+        boundary.getConfig.mockResolvedValue(
+          change === 'replace-gateway'
+            ? { ...gateway, gateway_url: 'https://new-igw.example' }
+            : change === 'switch-mqtt'
+              ? configured()
+              : disabled()
+        )
+        await connection.connectMqtt()
+      }
+      expect(bannerNotifications.value.map((banner) => banner.id)).toEqual(['controller-1'])
+      expect(notifications.value).toHaveLength(2)
+      expect(
+        boundary.invoke.mock.calls.some(([name]) => name === 'acknowledge_victron_banner')
+      ).toBe(false)
+      if (change === 'replace-gateway') {
+        expect(dataSource.value).toBe('igw')
+        emit('mqtt-notification', alarm)
+        expect(bannerNotifications.value).toHaveLength(2)
+      }
+    }
+  )
+
   it('renders native Victron banners delivered over IGW and clears an acknowledged slot', async () => {
     boundary.getConfig.mockResolvedValue({
       ...disabled(),

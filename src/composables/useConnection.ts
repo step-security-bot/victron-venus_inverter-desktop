@@ -20,6 +20,7 @@ import {
   applyInverterState,
   type BannerNotification,
   clearBanner,
+  clearVictronPlatformBanners,
   dataSource,
   type InverterState,
   mqttConnected,
@@ -168,6 +169,7 @@ export function useConnection() {
   async function startMqtt(config: AppConfig, note?: { title: string; body: string }) {
     if (!inverterEnabled) return
     const current = session
+    clearVictronPlatformBanners()
     dataSource.value = 'mqtt'
     // Set pending before invoking: ConnAck can arrive before invoke resolves.
     mqttConnected.value = false
@@ -183,6 +185,7 @@ export function useConnection() {
     if (!inverterEnabled) return
     clearMqttConnectWatchdog()
     const current = session
+    clearVictronPlatformBanners()
     dataSource.value = 'igw'
     mqttConnected.value = false
     refreshTelemetryQuality()
@@ -445,6 +448,7 @@ export function useConnection() {
     clearMqttConnectWatchdog()
     for (const unlisten of listeners) unlisten()
     listeners = []
+    clearVictronPlatformBanners()
 
     if (mqttReconnectTimer) {
       clearTimeout(mqttReconnectTimer)
