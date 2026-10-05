@@ -6,6 +6,7 @@ use crate::mqtt::{
     inverter_state_name, voltage_soc, Battery, DiscoveredInstance, InverterState, MpptCharger,
     PvInverter, SetpointOverrideStatus,
 };
+use crate::notification_session::{NotificationSession, SessionAppHandle};
 use chrono::Utc;
 use log::{info, warn};
 use serde::Deserialize;
@@ -14,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 mod notifications;
 
@@ -134,6 +135,7 @@ pub struct GatewaySnapshot {
 
 pub struct GatewayClient {
     state: Arc<Mutex<InverterState>>,
+    notification_session: NotificationSession,
     stop: Arc<AtomicBool>,
     handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     base: String,
@@ -145,6 +147,12 @@ pub struct GatewayClient {
 impl GatewayClient {
     pub fn get_state(&self) -> InverterState {
         self.state.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn get_scoped_state(&self) -> Result<Value, String> {
+        self.notification_session
+            .bind(self.get_state())
+            .map_err(|error| error.to_string())
     }
 
     pub fn stop(&self) {
@@ -937,6 +945,7 @@ fn preserve_battery_time_to_go(prev: &InverterState, next: &mut InverterState) {
 
 pub(crate) fn start_gateway_client(
     app: AppHandle,
+    notification_session: NotificationSession,
     url: String,
     access_client_id: String,
     access_client_secret: String,
@@ -945,6 +954,7 @@ pub(crate) fn start_gateway_client(
 ) -> Result<GatewayClient, String> {
     let base = validate_base_url(&url)?;
     validate_access_credentials(&access_client_id, &access_client_secret)?;
+    let app = SessionAppHandle::new(app, notification_session.clone());
 
     let state = Arc::new(Mutex::new(InverterState::default()));
     let stop = Arc::new(AtomicBool::new(false));
@@ -1043,6 +1053,7 @@ pub(crate) fn start_gateway_client(
 
     Ok(GatewayClient {
         state,
+        notification_session,
         stop,
         handle: Mutex::new(Some(handle)),
         base: base.clone(),
@@ -1056,6 +1067,7 @@ pub(crate) fn start_gateway_client(
 pub(crate) fn idle_test_client() -> GatewayClient {
     GatewayClient {
         state: Arc::new(Mutex::new(InverterState::default())),
+        notification_session: NotificationSession::new("test-gateway".into()).unwrap(),
         stop: Arc::new(AtomicBool::new(false)),
         handle: Mutex::new(None),
         base: String::new(),
@@ -1069,6 +1081,33 @@ pub(crate) fn idle_test_client() -> GatewayClient {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hydration_is_scoped_before_first_live_event_and_keeps_original_identity() {
+        let old = idle_test_client();
+        let mut replacement = idle_test_client();
+        replacement.notification_session =
+            NotificationSession::new("replacement-gateway".into()).unwrap();
+        assert_eq!(
+            old.get_scoped_state().unwrap()["notification_session"],
+            "test-gateway"
+        );
+        assert_eq!(
+            replacement.get_scoped_state().unwrap()["notification_session"],
+            "replacement-gateway"
+        );
+        old.stop();
+        assert_eq!(
+            old.get_scoped_state().unwrap()["notification_session"],
+            "test-gateway"
+        );
+        // The domain object remains unchanged; scoping is exclusively an IPC
+        // boundary concern, never a value that an incoming snapshot can choose.
+        assert!(serde_json::to_value(old.get_state())
+            .unwrap()
+            .get("notification_session")
+            .is_none());
+    }
 
     #[test]
     fn native_gateway_requests_omit_cloudflare_headers() {

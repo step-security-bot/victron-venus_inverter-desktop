@@ -476,8 +476,8 @@ export function clearBanner(id: string) {
 }
 
 /** A replaced transport must repopulate native alarms from its own source. */
-export function clearVictronPlatformBanners() {
+export function clearVictronBanners() {
   bannerNotifications.value = bannerNotifications.value.filter(
-    (banner) => !banner.id.startsWith('victron-platform-')
+    (banner) => banner.source !== 'victron' && !banner.id.startsWith('victron-platform-')
   )
 }

@@ -99,6 +99,7 @@ import { SlidersHorizontal } from '@lucide/vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { computed, nextTick, onMounted, onUnmounted, ref, useId } from 'vue'
+import { acceptsCurrentTransportEvent } from '../composables/transportSession'
 import UiButton from './UiButton.vue'
 
 interface OverrideStatus {
@@ -175,11 +176,19 @@ async function initialize() {
       unlisten = unsubscribe
     }
     if (!unlistenConnection) {
-      const unsubscribe = await listen<boolean>('mqtt-connection-status', (event) => {
-        if (disposed || event.payload !== false) return
-        eventRevision += 1
-        receiveStatus(null)
-      })
+      const unsubscribe = await listen<{ connected: boolean; notification_session?: string }>(
+        'mqtt-connection-status',
+        (event) => {
+          if (
+            disposed ||
+            !acceptsCurrentTransportEvent(event.payload) ||
+            event.payload.connected !== false
+          )
+            return
+          eventRevision += 1
+          receiveStatus(null)
+        }
+      )
       if (disposed) {
         unsubscribe()
         return

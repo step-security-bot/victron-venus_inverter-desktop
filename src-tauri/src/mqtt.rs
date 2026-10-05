@@ -1,3 +1,4 @@
+use crate::notification_session::{NotificationSession, SessionAppHandle};
 use chrono::{TimeZone, Utc};
 use rumqttc::{Client, ConnectReturnCode, MqttOptions, Packet, QoS, SubscribeFilter};
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
 
 mod cerbo;
 mod lifecycle;
@@ -980,7 +980,7 @@ pub struct MqttClient {
     username: Option<String>,
     password: Option<String>,
     transport: rumqttc::Transport,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<SessionAppHandle>,
     /// Shared so runtime inverter/portal discovery updates W/ ack topics.
     portal_id: Arc<Mutex<Option<String>>>,
     /// Cerbo GX water instances: (tank, pump, valve). Any side may be None;
@@ -1363,8 +1363,12 @@ impl MqttClient {
         }
     }
 
-    pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
-        self.app_handle = Some(handle);
+    pub(crate) fn set_app_handle(
+        &mut self,
+        handle: tauri::AppHandle,
+        notification_session: NotificationSession,
+    ) {
+        self.app_handle = Some(SessionAppHandle::new(handle, notification_session));
     }
 
     pub fn set_portal_id(&mut self, id: Option<String>) {
@@ -1386,6 +1390,16 @@ impl MqttClient {
 
     pub fn get_state(&self) -> InverterState {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// IPC hydration must identify the actual native producer, including the
+    /// initial empty snapshot while its connection is still being established.
+    pub(crate) fn get_scoped_state(&self) -> Result<serde_json::Value, String> {
+        self.app_handle
+            .as_ref()
+            .ok_or_else(|| "MQTT notification session is not configured".to_string())?
+            .bind(self.get_state())
+            .map_err(|error| error.to_string())
     }
 
     pub fn emit_current_state(&self, force: bool) {
@@ -1510,7 +1524,7 @@ impl MqttClient {
         transport: rumqttc::Transport,
         client_id: &str,
         state: Arc<Mutex<InverterState>>,
-        app_handle: Option<tauri::AppHandle>,
+        app_handle: Option<SessionAppHandle>,
         portal_id: Arc<Mutex<Option<String>>>,
         water_instances: Option<(Option<u32>, Option<u32>, Option<u32>)>,
         ev_instances: Option<(Option<u32>, Option<u32>)>,
@@ -1771,7 +1785,7 @@ impl MqttClient {
         payload: &str,
         retained: bool,
         state: &Arc<Mutex<InverterState>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
         water_instances: &Option<(Option<u32>, Option<u32>, Option<u32>)>,
         ev_instances: &Option<(Option<u32>, Option<u32>)>,
         notifications: &Arc<Mutex<NotificationState>>,
@@ -2149,7 +2163,7 @@ impl MqttClient {
         platform_notifs: &Arc<Mutex<HashMap<u32, PlatformNotifSlot>>>,
         platform_notifs_seen: &Arc<std::sync::atomic::AtomicBool>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         let Some((inst, slot, field)) = Self::parse_platform_notif_topic(topic) else {
             return;
@@ -2209,7 +2223,7 @@ impl MqttClient {
     fn reemit_platform_notifications_with_cell_detail(
         platform_notifs: &Arc<Mutex<HashMap<u32, PlatformNotifSlot>>>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         let Some(ref handle) = app_handle else {
             return;
@@ -2235,7 +2249,7 @@ impl MqttClient {
         alarms: &Arc<Mutex<HashMap<String, u8>>>,
         platform_notifs_seen: &Arc<std::sync::atomic::AtomicBool>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         if platform_notifs_seen.load(std::sync::atomic::Ordering::Relaxed) {
             return;
@@ -2407,7 +2421,7 @@ impl MqttClient {
         alarms: &Arc<Mutex<HashMap<String, u8>>>,
         platform_notifs_seen: &Arc<std::sync::atomic::AtomicBool>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         if platform_notifs_seen.load(std::sync::atomic::Ordering::Relaxed) {
             return;
@@ -2480,7 +2494,7 @@ impl MqttClient {
     fn process_state_update(
         raw: RawInverterState,
         state: Arc<Mutex<InverterState>>,
-        app_handle: Option<tauri::AppHandle>,
+        app_handle: Option<SessionAppHandle>,
         notifications: Arc<Mutex<NotificationState>>,
         cerbo_devices: Option<Arc<Mutex<CerboDevices>>>,
         ev_cache: Arc<Mutex<EvCache>>,

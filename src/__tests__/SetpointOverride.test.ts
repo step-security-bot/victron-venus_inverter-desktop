@@ -2,18 +2,25 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SetpointOverride from '../components/SetpointOverride.vue'
 
-const boundary = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }))
+const boundary = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), session: 'current' }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: boundary.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: boundary.listen }))
+vi.mock('../composables/transportSession', () => ({
+  acceptsCurrentTransportEvent: (payload: { notification_session?: string }) =>
+    payload?.notification_session === boundary.session,
+}))
 
 type Status = { value: number | null; last_error: string | null }
 let onStatus: (event: { payload: Status | null }) => void
-let onConnection: (event: { payload: boolean }) => void
+let onConnection: (event: {
+  payload: { connected: boolean; notification_session?: string }
+}) => void
 let wrapper: VueWrapper | undefined
 const inactive = { value: null, last_error: null }
 const active = { value: 100, last_error: null }
 
 beforeEach(() => {
+  boundary.session = 'current'
   boundary.invoke.mockReset().mockResolvedValue(inactive)
   boundary.listen.mockReset().mockImplementation(async (name, callback) => {
     if (name === 'setpoint-override-update') onStatus = callback
@@ -144,11 +151,11 @@ describe('Setpoint Override transport status', () => {
   it('clears an active status on transport loss until a fresh status arrives', async () => {
     boundary.invoke.mockResolvedValue(active)
     await render()
-    onConnection({ payload: false })
+    onConnection({ payload: { connected: false, notification_session: 'current' } })
     await flushPromises()
     expect(trigger().attributes('aria-pressed')).toBeUndefined()
     expect(wrapper!.text()).toContain('Status unknown')
-    onConnection({ payload: true })
+    onConnection({ payload: { connected: true, notification_session: 'current' } })
     await flushPromises()
     expect(trigger().attributes('aria-pressed')).toBeUndefined()
     onStatus({ payload: inactive })
@@ -177,7 +184,7 @@ describe('Setpoint Override transport status', () => {
       .querySelector('form')!
       .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await flushPromises()
-    onConnection({ payload: false })
+    onConnection({ payload: { connected: false, notification_session: 'current' } })
     resolveCommand(active)
     await flushPromises()
     expect(trigger().attributes('aria-pressed')).toBeUndefined()
@@ -187,5 +194,18 @@ describe('Setpoint Override transport status', () => {
     resolveRefresh(active)
     await flushPromises()
     expect(trigger().attributes('aria-pressed')).toBe('false')
+  })
+
+  it('ignores delayed connection loss from a replaced transport and untagged status', async () => {
+    boundary.invoke.mockResolvedValue(active)
+    await render()
+    onConnection({ payload: { connected: false, notification_session: 'previous' } })
+    onConnection({ payload: { connected: false } })
+    await flushPromises()
+    expect(trigger().attributes('aria-pressed')).toBe('true')
+    expect(wrapper!.text()).toContain('100 W')
+    onConnection({ payload: { connected: false, notification_session: 'current' } })
+    await flushPromises()
+    expect(wrapper!.text()).toContain('Status unknown')
   })
 })
