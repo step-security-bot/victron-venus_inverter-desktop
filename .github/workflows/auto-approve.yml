@@ -4,29 +4,9 @@ name: Auto Approve PRs
 # Never check out or execute pull request code.
 on:
   pull_request:
-    types:
-      [
-        opened,
-        synchronize,
-        reopened,
-        ready_for_review,
-        labeled,
-        unlabeled,
-        edited,
-        converted_to_draft,
-      ]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited, converted_to_draft]
   pull_request_target:
-    types:
-      [
-        opened,
-        synchronize,
-        reopened,
-        ready_for_review,
-        labeled,
-        unlabeled,
-        edited,
-        converted_to_draft,
-      ]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited, converted_to_draft]
 
 permissions:
   contents: read
@@ -45,7 +25,7 @@ jobs:
        (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)) &&
       contains(fromJSON('["4alvit","californiantiramisu","dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login) &&
       !github.event.pull_request.draft
-    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-approve-reusable.yml@f96a5ff0e1e4ff7cf2c8bf0f44fbd30e9bc74266 # main
+    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-approve-reusable.yml@5f5ff3846aacee0edfbeadeb316ee68525e9208d # main
     secrets:
       BOT_PAT: ${{ secrets.BOT_PAT }}
       APPROVAL_PAT: ${{ secrets.APPROVAL_PAT }}
