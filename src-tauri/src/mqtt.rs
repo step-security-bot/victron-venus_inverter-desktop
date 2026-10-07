@@ -881,13 +881,9 @@ struct NotificationState {
 /// ran on every inverter/state message and, while building its merged
 /// snapshot, cloned the state from *before* apply_ev_message landed. The
 /// resulting write-back wiped the freshly-populated EV fields and the tile
-/// toggled on/off in a 2 s loop. SoC never showed because inverter/state
-/// published car_soc=0 when no car was connected, and merge_opt!(car_soc)
-/// happily overwrote the real 0 with the daemon's 0 — wait, 0 is a
-/// perfectly cromulent value. The real issue is that *missing* SoC
-/// (inverter publishes 0 as "not connected") is indistinguishable from a
-/// legitimate 0, so we treat 0 as no-data for SoC and refuse to clobber a
-/// cached real value.
+/// toggled on/off in a 2 s loop. RawInverterState intentionally excludes EV
+/// fields, so a daemon car_soc=0 cannot replace a direct Cerbo sample. Direct
+/// SoC 0 is a valid measurement and follows the same throttle as positive SoC.
 ///
 /// Throttle: per-field, ignore a new sample if the cached sample is younger
 /// than 8 s. The cache survives process_state_update so the tile keeps
@@ -907,14 +903,14 @@ const EV_CACHE_TTL: Duration = Duration::from_secs(8);
 
 impl EvCache {
     /// Apply a new Cerbo sample; returns true if the cache was updated.
-    /// - car_soc: 0 is treated as no-data (refused if cache already populated).
+    /// - car_soc: accept 0; a negative sample cannot replace a cached value.
     /// - power: 0 is a legitimate idle value, accepted.
     /// - throttle: reject a sample if the existing cache is younger than TTL.
     fn update(&mut self, field: EvField, value: f64) -> bool {
         let now = Instant::now();
         let slot = match field {
             EvField::CarSoc => {
-                if value <= 0.0 && self.car_soc.is_some() {
+                if value < 0.0 && self.car_soc.is_some() {
                     return false;
                 }
                 &mut self.car_soc
@@ -3769,9 +3765,8 @@ mod tests {
     }
 
     #[test]
-    fn ev_cache_zero_soc_does_not_clobber_real_soc() {
-        // inverter-control publishes car_soc=0 when no car is connected.
-        // The cache must refuse to overwrite a real SoC with 0.
+    fn ev_cache_zero_soc_obeys_throttle_window() {
+        // Direct zero SoC is throttled just like any other Cerbo sample.
         let mut cache = EvCache::default();
         let instances = Some((Some(22), Some(40)));
 
@@ -3783,7 +3778,7 @@ mod tests {
         .is_some());
         assert_eq!(st.car_soc, Some(66.0));
 
-        // Second: daemon publishes 0 → cache refuses update (preserves real).
+        // Second: direct zero within the TTL preserves the cached sample.
         // apply_ev_message still copies cached value onto st2 and returns Some.
         let mut st2 = InverterState::default();
         assert_eq!(
@@ -3792,6 +3787,101 @@ mod tests {
         );
         assert_eq!(st2.car_soc, Some(66.0)); // cached value preserved, not clobbered
         assert_eq!(st.car_soc, Some(66.0));
+    }
+
+    #[test]
+    fn ev_cache_aged_direct_soc_accepts_zero_and_recovers() {
+        let instances = Some((Some(22), Some(40)));
+        for (kind, instance) in [("ev", 22), ("evcharger", 40)] {
+            let mut cache = EvCache::default();
+            let mut state = InverterState::default();
+            MqttClient::apply_ev_message(
+                &mut state, &mut cache, kind, instance, "Soc", 66.0, &instances,
+            );
+            let aged = Instant::now()
+                .checked_sub(EV_CACHE_TTL + Duration::from_secs(1))
+                .expect("test clock can represent an expired EV sample");
+            cache.car_soc.as_mut().unwrap().1 = aged;
+
+            // An unrelated instance cannot overwrite or refresh the selected sample.
+            assert_eq!(
+                MqttClient::apply_ev_message(
+                    &mut state,
+                    &mut cache,
+                    kind,
+                    instance + 1,
+                    "Soc",
+                    0.0,
+                    &instances,
+                ),
+                None,
+            );
+            assert_eq!(cache.car_soc, Some((66.0, aged)));
+            MqttClient::apply_ev_message(
+                &mut state, &mut cache, kind, instance, "Soc", -1.0, &instances,
+            );
+            assert_eq!(cache.car_soc, Some((66.0, aged)));
+            assert_eq!(state.car_soc, Some(66.0));
+
+            assert_eq!(
+                MqttClient::apply_ev_message(
+                    &mut state, &mut cache, kind, instance, "Soc", 0.0, &instances,
+                ),
+                Some(EvField::CarSoc),
+            );
+            assert_eq!(state.car_soc, Some(0.0));
+            let mut restored = InverterState::default();
+            cache.restore_into(&mut restored);
+            assert_eq!(restored.car_soc, Some(0.0));
+            assert!(restored.ev_present || restored.evcharger_present);
+
+            cache.car_soc.as_mut().unwrap().1 = aged;
+            MqttClient::apply_ev_message(
+                &mut state, &mut cache, kind, instance, "Soc", 25.0, &instances,
+            );
+            assert_eq!(state.car_soc, Some(25.0));
+        }
+    }
+
+    #[test]
+    fn ev_cache_daemon_zero_does_not_replace_direct_soc() {
+        for direct_soc in [66.0, 0.0] {
+            let state = Arc::new(Mutex::new(InverterState::default()));
+            let ev_cache = Arc::new(Mutex::new(EvCache::default()));
+            MqttClient::apply_ev_message(
+                &mut state.lock().unwrap(),
+                &mut ev_cache.lock().unwrap(),
+                "ev",
+                22,
+                "Soc",
+                direct_soc,
+                &Some((Some(22), Some(40))),
+            );
+            let raw: RawInverterState =
+                serde_json::from_str(r#"{"car_soc":0,"latest_version":"daemon-merge-witness"}"#)
+                    .unwrap();
+            MqttClient::process_state_update(
+                raw,
+                state.clone(),
+                None,
+                Arc::new(Mutex::new(NotificationState {
+                    high_consumption: AlertState::new(),
+                    low_water: AlertState::new(),
+                    high_solar: AlertState::new(),
+                    high_load: std::collections::HashMap::new(),
+                })),
+                Some(Arc::new(Mutex::new(CerboDevices::default()))),
+                ev_cache,
+                &Arc::new(StateEmitter::new(true)),
+            );
+            let merged = state.lock().unwrap();
+            assert_eq!(
+                merged.latest_version.as_deref(),
+                Some("daemon-merge-witness")
+            );
+            assert_eq!(merged.car_soc, Some(direct_soc));
+            assert!(merged.ev_present);
+        }
     }
 
     // -------------------------------------------------------------------------
