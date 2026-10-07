@@ -1,3 +1,4 @@
+use crate::notification_session::{NotificationSession, SessionAppHandle};
 use chrono::{TimeZone, Utc};
 use rumqttc::{Client, ConnectReturnCode, MqttOptions, Packet, QoS, SubscribeFilter};
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
 
 mod cerbo;
 mod lifecycle;
@@ -980,7 +980,7 @@ pub struct MqttClient {
     username: Option<String>,
     password: Option<String>,
     transport: rumqttc::Transport,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<SessionAppHandle>,
     /// Shared so runtime inverter/portal discovery updates W/ ack topics.
     portal_id: Arc<Mutex<Option<String>>>,
     /// Cerbo GX water instances: (tank, pump, valve). Any side may be None;
@@ -1008,7 +1008,7 @@ pub struct MqttClient {
 }
 
 /// Notification pushed by inverter-control on {prefix}/notifications.
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
 pub struct MqttNotification {
     pub id: String,
     pub level: String,
@@ -1029,7 +1029,7 @@ pub struct MqttNotification {
 /// those live on separate battery paths (System/MaxCellVoltage,
 /// System/MaxVoltageCellId, Cell/*/Voltage) and are not in this payload.
 #[derive(Debug, Clone, Default)]
-struct PlatformNotifSlot {
+pub(crate) struct PlatformNotifSlot {
     platform_instance: u32,
     slot: u32,
     description: Option<String>,
@@ -1049,6 +1049,51 @@ struct PlatformNotifSlot {
 }
 
 impl PlatformNotifSlot {
+    fn apply_field(&mut self, field: &str, json: &serde_json::Value) {
+        match field {
+            "Description" => self.description = MqttClient::json_value_string(json),
+            "DeviceName" => self.device_name = MqttClient::json_value_string(json),
+            "Service" => self.service = MqttClient::json_value_string(json),
+            "DateTime" => {
+                let next = MqttClient::json_value_i64(json);
+                // New event in a recycled slot — allow the banner again.
+                if next.is_some() && next != self.date_time {
+                    self.user_dismissed = false;
+                }
+                self.date_time = next;
+            }
+            "Type" => self.notif_type = MqttClient::json_value_i64(json),
+            "Active" => {
+                self.active = MqttClient::json_value_bool(json);
+                // Condition cleared — next Active=true is a fresh alarm.
+                if self.active == Some(false) {
+                    self.user_dismissed = false;
+                }
+            }
+            "Acknowledged" => self.acknowledged = MqttClient::json_value_bool(json),
+            "Silenced" => self.silenced = MqttClient::json_value_bool(json),
+            _ => {}
+        }
+    }
+
+    /// A complete HTTP snapshot can arrive in any field order. Assemble the slot
+    /// before rendering, so Acknowledged=true never flashes a historical alarm.
+    pub(crate) fn from_gateway_fields(
+        platform_instance: u32,
+        slot: u32,
+        fields: &HashMap<String, serde_json::Value>,
+    ) -> Self {
+        let mut result = Self {
+            platform_instance,
+            slot,
+            ..Default::default()
+        };
+        for (field, value) in fields {
+            result.apply_field(field, &serde_json::json!({ "value": value }));
+        }
+        result
+    }
+
     fn banner_id(&self) -> String {
         format!("victron-platform-{}-{}", self.platform_instance, self.slot)
     }
@@ -1070,7 +1115,7 @@ impl PlatformNotifSlot {
         !desc.is_empty()
     }
 
-    fn to_notification(&self) -> Option<MqttNotification> {
+    pub(crate) fn to_notification(&self) -> Option<MqttNotification> {
         if !self.should_show() {
             return None;
         }
@@ -1090,9 +1135,12 @@ impl PlatformNotifSlot {
             .to_string();
         let ts = self
             .date_time
+            .filter(|secs| *secs > 0)
             .and_then(|secs| Utc.timestamp_opt(secs, 0).single())
             .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| Utc::now().to_rfc3339());
+            // MQTT fields arrive separately. Keep the alarm visible while its
+            // DateTime is missing, without presenting an old replay as new.
+            .unwrap_or_default();
         Some(MqttNotification {
             id: self.banner_id(),
             level: self.level().to_string(),
@@ -1318,8 +1366,12 @@ impl MqttClient {
         }
     }
 
-    pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
-        self.app_handle = Some(handle);
+    pub(crate) fn set_app_handle(
+        &mut self,
+        handle: tauri::AppHandle,
+        notification_session: NotificationSession,
+    ) {
+        self.app_handle = Some(SessionAppHandle::new(handle, notification_session));
     }
 
     pub fn set_portal_id(&mut self, id: Option<String>) {
@@ -1341,6 +1393,16 @@ impl MqttClient {
 
     pub fn get_state(&self) -> InverterState {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// IPC hydration must identify the actual native producer, including the
+    /// initial empty snapshot while its connection is still being established.
+    pub(crate) fn get_scoped_state(&self) -> Result<serde_json::Value, String> {
+        self.app_handle
+            .as_ref()
+            .ok_or_else(|| "MQTT notification session is not configured".to_string())?
+            .bind(self.get_state())
+            .map_err(|error| error.to_string())
     }
 
     pub fn emit_current_state(&self, force: bool) {
@@ -1465,7 +1527,7 @@ impl MqttClient {
         transport: rumqttc::Transport,
         client_id: &str,
         state: Arc<Mutex<InverterState>>,
-        app_handle: Option<tauri::AppHandle>,
+        app_handle: Option<SessionAppHandle>,
         portal_id: Arc<Mutex<Option<String>>>,
         water_instances: Option<(Option<u32>, Option<u32>, Option<u32>)>,
         ev_instances: Option<(Option<u32>, Option<u32>)>,
@@ -1726,7 +1788,7 @@ impl MqttClient {
         payload: &str,
         retained: bool,
         state: &Arc<Mutex<InverterState>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
         water_instances: &Option<(Option<u32>, Option<u32>, Option<u32>)>,
         ev_instances: &Option<(Option<u32>, Option<u32>)>,
         notifications: &Arc<Mutex<NotificationState>>,
@@ -1778,11 +1840,7 @@ impl MqttClient {
             }
         } else if topic == "inverter/notifications" {
             match serde_json::from_str::<MqttNotification>(payload) {
-                Ok(mut notification) => {
-                    // Ensure timestamp is present (add if missing)
-                    if notification.ts.is_empty() {
-                        notification.ts = Utc::now().to_rfc3339();
-                    }
+                Ok(notification) => {
                     if let Some(ref handle) = app_handle {
                         let _ = handle.emit("mqtt-notification", &notification);
                         // Mirror to OS notification like local alerts
@@ -2104,7 +2162,7 @@ impl MqttClient {
         platform_notifs: &Arc<Mutex<HashMap<u32, PlatformNotifSlot>>>,
         platform_notifs_seen: &Arc<std::sync::atomic::AtomicBool>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         let Some((inst, slot, field)) = Self::parse_platform_notif_topic(topic) else {
             return;
@@ -2127,30 +2185,7 @@ impl MqttClient {
             });
             entry.platform_instance = inst;
             entry.slot = slot;
-            match field {
-                "Description" => entry.description = Self::json_value_string(&json),
-                "DeviceName" => entry.device_name = Self::json_value_string(&json),
-                "Service" => entry.service = Self::json_value_string(&json),
-                "DateTime" => {
-                    let next = Self::json_value_i64(&json);
-                    // New event in a recycled slot — allow the banner again.
-                    if next.is_some() && next != entry.date_time {
-                        entry.user_dismissed = false;
-                    }
-                    entry.date_time = next;
-                }
-                "Type" => entry.notif_type = Self::json_value_i64(&json),
-                "Active" => {
-                    entry.active = Self::json_value_bool(&json);
-                    // Condition cleared — next Active=true is a fresh alarm.
-                    if entry.active == Some(false) {
-                        entry.user_dismissed = false;
-                    }
-                }
-                "Acknowledged" => entry.acknowledged = Self::json_value_bool(&json),
-                "Silenced" => entry.silenced = Self::json_value_bool(&json),
-                _ => {}
-            }
+            entry.apply_field(field, &json);
             entry.clone()
         };
 
@@ -2187,7 +2222,7 @@ impl MqttClient {
     fn reemit_platform_notifications_with_cell_detail(
         platform_notifs: &Arc<Mutex<HashMap<u32, PlatformNotifSlot>>>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         let Some(ref handle) = app_handle else {
             return;
@@ -2213,7 +2248,7 @@ impl MqttClient {
         alarms: &Arc<Mutex<HashMap<String, u8>>>,
         platform_notifs_seen: &Arc<std::sync::atomic::AtomicBool>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         if platform_notifs_seen.load(std::sync::atomic::Ordering::Relaxed) {
             return;
@@ -2270,7 +2305,8 @@ impl MqttClient {
                     title,
                     body,
                     source: "victron".to_string(),
-                    ts: Utc::now().to_rfc3339(),
+                    // Raw Alarms/* carries a value, not the event's DateTime.
+                    ts: String::new(),
                 },
             );
         }
@@ -2385,7 +2421,7 @@ impl MqttClient {
         alarms: &Arc<Mutex<HashMap<String, u8>>>,
         platform_notifs_seen: &Arc<std::sync::atomic::AtomicBool>,
         cerbo_devices: &Arc<Mutex<CerboDevices>>,
-        app_handle: &Option<tauri::AppHandle>,
+        app_handle: &Option<SessionAppHandle>,
     ) {
         if platform_notifs_seen.load(std::sync::atomic::Ordering::Relaxed) {
             return;
@@ -2445,7 +2481,8 @@ impl MqttClient {
                         title,
                         body,
                         source: "victron".to_string(),
-                        ts: Utc::now().to_rfc3339(),
+                        // Retained raw alarm values have no event timestamp.
+                        ts: String::new(),
                     },
                 );
             } else {
@@ -2458,7 +2495,7 @@ impl MqttClient {
     fn process_state_update(
         raw: RawInverterState,
         state: Arc<Mutex<InverterState>>,
-        app_handle: Option<tauri::AppHandle>,
+        app_handle: Option<SessionAppHandle>,
         notifications: Arc<Mutex<NotificationState>>,
         cerbo_devices: Option<Arc<Mutex<CerboDevices>>>,
         ev_cache: Arc<Mutex<EvCache>>,
@@ -3245,8 +3282,47 @@ mod tests {
         assert_eq!(n.title, "High voltage");
         assert_eq!(n.body, "JBD Battery Chain 1");
         assert_eq!(n.level, "alarm");
-        assert!(n.ts.contains("2023-"), "unexpected ts {}", n.ts);
+        assert_eq!(n.ts, "2023-11-14T22:13:20+00:00");
         assert_eq!(n.id, "victron-platform-0-2");
+    }
+
+    #[test]
+    fn platform_slot_partial_replay_never_substitutes_receipt_time() {
+        let mut slot = PlatformNotifSlot::default();
+        slot.apply_field(
+            "Description",
+            &serde_json::json!({"value": "Internal failure"}),
+        );
+        assert!(slot.to_notification().unwrap().ts.is_empty());
+        slot.apply_field("DateTime", &serde_json::json!({"value": 1_791_226_020}));
+        let timestamp = slot.to_notification().unwrap().ts;
+        assert_eq!(timestamp, "2026-10-05T18:47:00+00:00");
+        for (field, value) in [
+            ("Active", serde_json::json!(false)),
+            ("Acknowledged", serde_json::json!(false)),
+            ("DeviceName", serde_json::json!("JBD Battery Chain 1")),
+        ] {
+            slot.apply_field(field, &serde_json::json!({"value": value}));
+            assert_eq!(slot.to_notification().unwrap().ts, timestamp);
+        }
+    }
+
+    #[test]
+    fn platform_slot_invalid_datetime_stays_unknown_instead_of_becoming_new() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(i64::MAX),
+            serde_json::json!("invalid"),
+        ] {
+            let mut slot = PlatformNotifSlot {
+                description: Some("Internal failure".into()),
+                ..Default::default()
+            };
+            slot.apply_field("DateTime", &serde_json::json!({"value": value}));
+            assert!(slot.to_notification().unwrap().ts.is_empty(), "{value}");
+        }
     }
 
     #[test]

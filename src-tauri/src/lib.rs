@@ -13,6 +13,7 @@ mod mobile_build;
 mod mobile_credentials;
 mod module_config;
 pub(crate) mod mqtt;
+mod notification_session;
 mod plugin_config;
 #[cfg(desktop)]
 pub mod plugins;
@@ -34,7 +35,7 @@ extern "C" {
 
 use gateway::GatewayClient;
 use log::{info, warn};
-use mqtt::{HeaderToggle, InverterState, MqttClient, SetpointOverrideStatus};
+use mqtt::{HeaderToggle, MqttClient, SetpointOverrideStatus};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
@@ -372,10 +373,10 @@ fn disconnect_inverter(
 fn get_state(
     mqtt_client: State<MqttState>,
     gateway_client: State<GatewayState>,
-) -> Result<InverterState, String> {
+) -> Result<serde_json::Value, String> {
     if let Ok(g) = gateway_client.0.lock() {
         if let Some(ref client) = *g {
-            return Ok(client.get_state());
+            return client.get_scoped_state();
         }
     }
     let client = mqtt_client
@@ -383,7 +384,7 @@ fn get_state(
         .lock()
         .map_err(|e| format!("Internal error: {}", e))?;
     if let Some(ref client) = *client {
-        Ok(client.get_state())
+        client.get_scoped_state()
     } else {
         Err("MQTT client not connected".to_string())
     }
@@ -882,6 +883,7 @@ async fn connect_mqtt(
     water_valve_instance: Option<u32>,
     evcharger_instance: Option<u32>,
     ev_instance: Option<u32>,
+    notification_session: String,
     app: tauri::AppHandle,
     mqtt_client: State<'_, MqttState>,
     gateway_client: State<'_, GatewayState>,
@@ -899,6 +901,7 @@ async fn connect_mqtt(
         water_valve_instance,
         evcharger_instance,
         ev_instance,
+        notification_session,
         app,
         mqtt_client,
         gateway_client,
@@ -920,11 +923,14 @@ async fn connect_mqtt_impl(
     water_valve_instance: Option<u32>,
     evcharger_instance: Option<u32>,
     ev_instance: Option<u32>,
+    notification_session: String,
     app: tauri::AppHandle,
     mqtt_client: State<'_, MqttState>,
     gateway_client: State<'_, GatewayState>,
     lifecycle: State<'_, InverterLifecycle>,
 ) -> Result<(), String> {
+    let notification_session =
+        notification_session::NotificationSession::new(notification_session)?;
     let mut client = MqttClient::new(
         host,
         port,
@@ -961,7 +967,7 @@ async fn connect_mqtt_impl(
     // it so controls cannot target an old broker under the new endpoint's UI.
     let _ = app.emit("setpoint-override-update", serde_json::Value::Null);
     client.configure_transport(tls)?;
-    client.set_app_handle(app);
+    client.set_app_handle(app, notification_session);
     client.set_portal_id(portal_id);
     client.set_water_instances(Some((
         water_tank_instance,
@@ -990,10 +996,13 @@ async fn connect_gateway(
     water_valve_instance: Option<u32>,
     ev_instance: Option<u32>,
     evcharger_instance: Option<u32>,
+    notification_session: String,
     app: tauri::AppHandle,
     mqtt_client: State<'_, MqttState>,
     gateway_client: State<'_, GatewayState>,
 ) -> Result<(), String> {
+    let notification_session =
+        notification_session::NotificationSession::new(notification_session)?;
     let url = gateway::validate_base_url(&url)?;
     gateway::validate_access_credentials(&access_client_id, &access_client_secret)?;
     let lifecycle = app.state::<InverterLifecycle>();
@@ -1031,6 +1040,7 @@ async fn connect_gateway(
         let _ = app.emit("setpoint-override-update", serde_json::Value::Null);
         let client = gateway::start_gateway_client(
             app.clone(),
+            notification_session,
             url,
             access_client_id,
             access_client_secret,

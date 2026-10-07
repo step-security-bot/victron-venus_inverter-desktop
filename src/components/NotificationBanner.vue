@@ -17,8 +17,16 @@
         <span class="font-semibold shrink-0 tracking-tight">{{ banner.title }}</span>
         <span v-if="banner.body" class="opacity-80 truncate min-w-0">{{ banner.body }}</span>
       </div>
-      <span v-if="banner.ts" class="text-[10px] opacity-60 shrink-0 whitespace-nowrap tabular">
-        {{ formatTimestamp(banner.ts) }}
+      <time
+        v-if="notificationTimestampMs(banner.ts) !== null"
+        :datetime="banner.ts"
+        :title="new Date(banner.ts!).toLocaleString(undefined, { timeZoneName: 'short' })"
+        class="text-[10px] opacity-60 shrink-0 whitespace-nowrap tabular"
+      >
+        {{ formatTimestamp(banner.ts, now) }}
+      </time>
+      <span v-else class="text-[10px] opacity-60 shrink-0">
+        {{ $t('notifications.timeUnavailable') }}
       </span>
       <button
         type="button"
@@ -34,8 +42,29 @@
 
 <script setup lang="ts">
 import { AlertOctagon, Info, TriangleAlert, X } from '@lucide/vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { bannerNotifications, dismissBanner } from '../composables/useInverterState'
-import { formatTimestamp } from '../utils'
+import { formatTimestamp, notificationTimestampMs } from '../utils'
+
+const now = ref(Date.now())
+const refreshClock = () => {
+  now.value = Date.now()
+}
+let clock: ReturnType<typeof setInterval> | undefined
+// Native notifications can stay unchanged for hours. Their age must keep moving,
+// including after a suspended/background webview resumes or a replay arrives.
+watch(bannerNotifications, refreshClock, { deep: true })
+onMounted(() => {
+  refreshClock()
+  clock = setInterval(refreshClock, 15_000)
+  document.addEventListener('visibilitychange', refreshClock)
+  window.addEventListener('focus', refreshClock)
+})
+onUnmounted(() => {
+  clearInterval(clock)
+  document.removeEventListener('visibilitychange', refreshClock)
+  window.removeEventListener('focus', refreshClock)
+})
 
 const levelClasses: Record<string, string> = {
   info: 'banner-info',

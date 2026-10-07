@@ -110,7 +110,14 @@ describe('mobile dashboard startup configuration lifecycle', () => {
     async function update(payload: Record<string, unknown>) {
       const callbacks = events.get('mqtt-state-update')
       expect(callbacks?.size).toBeGreaterThan(0)
-      for (const callback of callbacks ?? []) callback({ payload })
+      const connection = [...boundary.invoke.mock.calls]
+        .reverse()
+        .find(([name]) => name === 'connect_mqtt' || name === 'connect_gateway')
+      expect(connection?.[1].notificationSession).toBeTruthy()
+      for (const callback of callbacks ?? [])
+        callback({
+          payload: { ...payload, notification_session: connection![1].notificationSession },
+        })
       await flushPromises()
     }
     for (let poll = 0; poll < 3; poll++) {

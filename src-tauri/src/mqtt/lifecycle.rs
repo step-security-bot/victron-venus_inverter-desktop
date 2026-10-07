@@ -1,9 +1,9 @@
 //! Per-client cancellation and telemetry coalescing. Camera and inverter clients
 //! never share emission state; queued work cannot revive a stopped session.
 use super::{note_state_emit, InverterState};
+use crate::notification_session::SessionAppHandle;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
 
 const EMIT_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -107,7 +107,7 @@ impl StateEmitter {
     }
     pub(super) fn emit(
         self: &Arc<Self>,
-        app: &Option<tauri::AppHandle>,
+        app: &Option<SessionAppHandle>,
         snapshot: &InverterState,
         force: bool,
     ) {

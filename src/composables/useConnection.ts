@@ -14,12 +14,14 @@ import {
   shouldWatchdogFailoverToIgw,
 } from '../connectionPolicy'
 import { logger } from '../logger'
+import { notificationTimestampMs } from '../utils'
 import {
   addNotification,
   appConfig,
   applyInverterState,
   type BannerNotification,
   clearBanner,
+  clearVictronBanners,
   dataSource,
   type InverterState,
   mqttConnected,
@@ -29,8 +31,20 @@ import {
   upsertBanner,
 } from './useInverterState'
 import { notify } from './useSystemNotifications'
+import {
+  acceptsCurrentTransportEvent,
+  activateTransportSession,
+  deactivateTransportSession,
+  invalidateTransportSession,
+  isCurrentTransportSession,
+  reserveTransportSession,
+  type TransportEvent,
+} from './transportSession'
 
 export { notify }
+
+// Serialize transport commands across composable owners as well as reconnects.
+let transportOperations: Promise<unknown> = Promise.resolve()
 
 async function ensureNotificationPermission() {
   try {
@@ -50,13 +64,6 @@ async function send(action: string, payload: Record<string, unknown> = {}) {
     logger.error('Failed to send command:', e)
   }
 }
-
-/** Both MQTT + IGW configured → prefer MQTT; recover to MQTT while on IGW. */
-let dualPathPreferMqtt = false
-let mqttRecoveryTimer: ReturnType<typeof setInterval> | null = null
-let mqttOnlyReconnectAttempt = 0
-/** One-shot: dual-path MQTT started but never got status-true → IGW. */
-let mqttConnectWatchdogTimer: ReturnType<typeof setTimeout> | null = null
 
 function mqttConnectArgs(config: AppConfig) {
   return {
@@ -104,20 +111,82 @@ async function probeMqttReachable(config: AppConfig): Promise<boolean> {
 }
 
 export function useConnection() {
+  /** Both MQTT + IGW configured → prefer MQTT; recover to MQTT while on IGW. */
+  let dualPathPreferMqtt = false
+  let mqttRecoveryTimer: ReturnType<typeof setInterval> | null = null
+  let mqttOnlyReconnectAttempt = 0
+  let mqttConnectWatchdogTimer: ReturnType<typeof setTimeout> | null = null
   let session = 0
   let inverterEnabled = false
   let connectionKey: string | null = null
   let freshnessTimer: ReturnType<typeof setInterval> | null = null
   let listeners: Array<() => void> = []
-  let transportOperations: Promise<unknown> = Promise.resolve()
+  let transportGeneration = 0
+  let notificationSession: string | null = null
+  let recoveryProbe: object | null = null
 
-  function invokeTransport(command: string, args?: Record<string, unknown>) {
+  type TransportAttempt = { lifecycle: number; generation: number; notificationSession: string }
+
+  function invalidateNotifications() {
+    invalidateTransportSession(notificationSession)
+    notificationSession = null
+  }
+
+  function beginTransportReplacement(): TransportAttempt {
+    invalidateNotifications()
+    transportGeneration += 1
+    clearVictronBanners()
+    clearMqttConnectWatchdog()
+    if (mqttOfflineTimer) clearTimeout(mqttOfflineTimer)
+    mqttOfflineTimer = null
+    if (mqttReconnectTimer) clearTimeout(mqttReconnectTimer)
+    mqttReconnectTimer = null
+    notificationSession = reserveTransportSession()
+    return {
+      lifecycle: session,
+      generation: transportGeneration,
+      notificationSession,
+    }
+  }
+
+  function isCurrentTransport(attempt: TransportAttempt, requireEnabled = true) {
+    return (
+      (!requireEnabled || inverterEnabled) &&
+      attempt.lifecycle === session &&
+      attempt.generation === transportGeneration &&
+      isCurrentTransportSession(attempt.notificationSession)
+    )
+  }
+
+  function transportIsOwned() {
+    return inverterEnabled && isCurrentTransportSession(notificationSession)
+  }
+
+  function acceptsNotification(payload: unknown) {
+    return (
+      inverterEnabled &&
+      notificationSession !== null &&
+      isCurrentTransportSession(notificationSession) &&
+      acceptsCurrentTransportEvent(payload)
+    )
+  }
+
+  function invokeTransport(
+    command: string,
+    args?: Record<string, unknown>,
+    attempt?: TransportAttempt
+  ) {
     const current = session
     const operation = transportOperations
       .catch(() => {})
       .then(() => {
         // Preserve IPC completion order as well as backend lifecycle lock order.
-        if (current === session) return invoke(command, args)
+        if (current !== session || (attempt && !isCurrentTransport(attempt, false))) return
+        // Register the identity before invoke: a native initial event may arrive
+        // before the command promise resolves.
+        if (attempt && command !== 'disconnect_inverter')
+          activateTransportSession(attempt.notificationSession)
+        return invoke(command, args)
       })
     transportOperations = operation
     return operation
@@ -147,11 +216,14 @@ export function useConnection() {
   }
 
   function startMqttConnectWatchdog() {
-    if (!inverterEnabled) return
+    if (!transportIsOwned()) return
     clearMqttConnectWatchdog()
     if (!dualPathPreferMqtt) return
-    mqttConnectWatchdogTimer = setTimeout(() => {
+    const token = notificationSession
+    const watchdogTimer = setTimeout(() => {
+      if (mqttConnectWatchdogTimer !== watchdogTimer) return
       mqttConnectWatchdogTimer = null
+      if (token !== notificationSession || !transportIsOwned()) return
       if (
         shouldWatchdogFailoverToIgw({
           dualPath: dualPathPreferMqtt,
@@ -163,48 +235,85 @@ export function useConnection() {
         void failoverToIgw()
       }
     }, MQTT_CONNECT_WATCHDOG_MS)
+    mqttConnectWatchdogTimer = watchdogTimer
   }
 
-  async function startMqtt(config: AppConfig, note?: { title: string; body: string }) {
-    if (!inverterEnabled) return
-    const current = session
+  async function startMqtt(
+    config: AppConfig,
+    note: { title: string; body: string } | undefined,
+    attempt: TransportAttempt
+  ) {
+    if (!isCurrentTransport(attempt)) return false
     dataSource.value = 'mqtt'
     // Set pending before invoking: ConnAck can arrive before invoke resolves.
     mqttConnected.value = false
     refreshTelemetryQuality()
-    await invokeTransport('connect_mqtt', mqttConnectArgs(config))
-    if (current !== session || !inverterEnabled) return
+    try {
+      await invokeTransport(
+        'connect_mqtt',
+        {
+          ...mqttConnectArgs(config),
+          notificationSession: attempt.notificationSession,
+        },
+        attempt
+      )
+    } catch (error) {
+      if (!isCurrentTransport(attempt)) return false
+      deactivateTransportSession(attempt.notificationSession)
+      throw error
+    }
+    if (!isCurrentTransport(attempt)) return false
     mqttOnlyReconnectAttempt = 0
     stopMqttRecoveryProbe()
     if (note) void notify(note.title, note.body)
+    return true
   }
 
-  async function startIgw(config: AppConfig, note?: { title: string; body: string }) {
-    if (!inverterEnabled) return
+  async function startIgw(
+    config: AppConfig,
+    note: { title: string; body: string } | undefined,
+    attempt: TransportAttempt
+  ) {
+    if (!isCurrentTransport(attempt)) return false
     clearMqttConnectWatchdog()
-    const current = session
     dataSource.value = 'igw'
     mqttConnected.value = false
     refreshTelemetryQuality()
-    await invokeTransport('connect_gateway', gatewayConnectArgs(config))
-    if (current !== session || !inverterEnabled) return
+    try {
+      await invokeTransport(
+        'connect_gateway',
+        {
+          ...gatewayConnectArgs(config),
+          notificationSession: attempt.notificationSession,
+        },
+        attempt
+      )
+    } catch (error) {
+      if (!isCurrentTransport(attempt)) return false
+      deactivateTransportSession(attempt.notificationSession)
+      throw error
+    }
+    if (!isCurrentTransport(attempt)) return false
     if (note) void notify(note.title, note.body)
+    return true
   }
 
   async function connectMqtt() {
     cleanup()
+    let attempt = beginTransportReplacement()
     const current = session
+    const requestIsCurrent = () => isCurrentTransport(attempt, false)
     async function listenForSession<T>(name: string, handler: (event: Event<T>) => void) {
-      if (current !== session) return
+      if (!requestIsCurrent()) return
       const unlisten = await listen<T>(name, (event) => {
-        if (current === session) handler(event)
+        if (current === session && isCurrentTransportSession(notificationSession)) handler(event)
       })
-      if (current === session) listeners.push(unlisten)
+      if (requestIsCurrent()) listeners.push(unlisten)
       else unlisten()
     }
     try {
       const config = await getAppConfig()
-      if (current !== session) return
+      if (!requestIsCurrent()) return
       inverterEnabled = isMqttConfigured(config) || isIgwConfigured(config)
       const nextKey = JSON.stringify([
         config.mqtt_host,
@@ -220,7 +329,10 @@ export function useConnection() {
       ])
       if (connectionKey !== null && connectionKey !== nextKey) resetInverterState()
       connectionKey = nextKey
-      if (inverterEnabled) freshnessTimer = setInterval(refreshTelemetryQuality, 1000)
+      if (inverterEnabled)
+        freshnessTimer = setInterval(() => {
+          if (transportIsOwned()) refreshTelemetryQuality()
+        }, 1000)
       appConfig.value = config
       if (config.color_scheme) {
         const isDark = config.color_scheme !== 'light'
@@ -228,50 +340,67 @@ export function useConnection() {
         localStorage.setItem('theme', config.color_scheme)
       }
 
-      await listenForSession<InverterState>('mqtt-state-update', (event) => {
-        if (inverterEnabled) processState(event.payload)
+      await listenForSession<TransportEvent<InverterState>>('mqtt-state-update', (event) => {
+        if (acceptsNotification(event.payload)) processState(event.payload)
       })
 
-      await listenForSession<boolean>('mqtt-connection-status', (event) => {
-        if (!inverterEnabled) return
-        if (event.payload) {
-          if (mqttOfflineTimer) {
-            clearTimeout(mqttOfflineTimer)
-            mqttOfflineTimer = null
-          }
-          clearMqttConnectWatchdog()
-          mqttConnected.value = true
-          refreshTelemetryQuality()
-          mqttOnlyReconnectAttempt = 0
-        } else if (!mqttOfflineTimer) {
-          mqttOfflineTimer = setTimeout(() => {
-            mqttOfflineTimer = null
-            mqttConnected.value = false
-            refreshTelemetryQuality()
-            // MQTT lost while dual-path preferred MQTT → exclusive failover to IGW.
-            if (dualPathPreferMqtt && dataSource.value === 'mqtt') {
-              logger.log('Cerbo MQTT offline — failing over to IGW')
-              void failoverToIgw()
+      await listenForSession<TransportEvent<{ connected: boolean }>>(
+        'mqtt-connection-status',
+        (event) => {
+          if (!acceptsNotification(event.payload)) return
+          if (event.payload.connected === true) {
+            if (mqttOfflineTimer) {
+              clearTimeout(mqttOfflineTimer)
+              mqttOfflineTimer = null
             }
-            // MQTT-only: Rust client reconnects with calm backoff; no frontend hammer.
-          }, MQTT_OFFLINE_DELAY_MS)
+            clearMqttConnectWatchdog()
+            mqttConnected.value = true
+            refreshTelemetryQuality()
+            mqttOnlyReconnectAttempt = 0
+          } else if (event.payload.connected === false && !mqttOfflineTimer) {
+            const statusToken = notificationSession
+            const offlineTimer = setTimeout(() => {
+              if (mqttOfflineTimer !== offlineTimer) return
+              mqttOfflineTimer = null
+              if (statusToken !== notificationSession || !transportIsOwned()) return
+              mqttConnected.value = false
+              refreshTelemetryQuality()
+              // MQTT lost while dual-path preferred MQTT → exclusive failover to IGW.
+              if (dualPathPreferMqtt && dataSource.value === 'mqtt') {
+                logger.log('Cerbo MQTT offline — failing over to IGW')
+                void failoverToIgw()
+              }
+              // MQTT-only: Rust client reconnects with calm backoff; no frontend hammer.
+            }, MQTT_OFFLINE_DELAY_MS)
+            mqttOfflineTimer = offlineTimer
+          }
         }
-      })
+      )
 
-      await listenForSession<{ title: string; body: string }>('notification', (event) => {
-        addNotification(event.payload.title, event.payload.body)
-      })
+      await listenForSession<TransportEvent<{ title: string; body: string }>>(
+        'notification',
+        (event) => {
+          if (!acceptsNotification(event.payload)) return
+          addNotification(event.payload.title, event.payload.body)
+        }
+      )
 
-      await listenForSession<BannerNotification>('mqtt-notification', (event) => {
+      await listenForSession<TransportEvent<BannerNotification>>('mqtt-notification', (event) => {
+        if (!acceptsNotification(event.payload)) return
         upsertBanner(event.payload)
-        addNotification(event.payload.title, event.payload.body)
+        addNotification(
+          event.payload.title,
+          event.payload.body,
+          notificationTimestampMs(event.payload.ts)
+        )
       })
 
-      await listenForSession<{ id: string }>('mqtt-notification-clear', (event) => {
+      await listenForSession<TransportEvent<{ id: string }>>('mqtt-notification-clear', (event) => {
+        if (!acceptsNotification(event.payload)) return
         clearBanner(event.payload.id)
       })
 
-      if (current !== session) return
+      if (!requestIsCurrent()) return
       const mqttOk = isMqttConfigured(config)
       const igwOk = isIgwConfigured(config)
       dualPathPreferMqtt = mqttOk && igwOk
@@ -279,7 +408,7 @@ export function useConnection() {
       let mqttReachable = false
       if (dualPathPreferMqtt) {
         mqttReachable = await probeMqttReachable(config)
-        if (current !== session) return
+        if (!requestIsCurrent()) return
       }
 
       const startup = chooseStartupSource({
@@ -292,29 +421,47 @@ export function useConnection() {
 
       if (startup === 'mqtt') {
         try {
-          await startMqtt(config, { title: 'MQTT', body: 'Connecting to inverter' })
-          if (current !== session) return
+          if (
+            !(await startMqtt(config, { title: 'MQTT', body: 'Connecting to inverter' }, attempt))
+          )
+            return
+          if (!requestIsCurrent()) return
           if (dualPathPreferMqtt) {
             startMqttConnectWatchdog()
           }
         } catch (e) {
-          if (current !== session) return
+          if (!requestIsCurrent()) return
           logger.error('MQTT connect failed:', e)
           if (igwOk) {
             logger.log('MQTT connect failed — starting IGW')
-            await startIgw(config, { title: 'Gateway', body: 'MQTT unavailable — using IGW' })
-            if (current !== session) return
+            attempt = beginTransportReplacement()
+            if (
+              !(await startIgw(
+                config,
+                { title: 'Gateway', body: 'MQTT unavailable — using IGW' },
+                attempt
+              ))
+            )
+              return
+            if (!requestIsCurrent()) return
             startMqttRecoveryProbe()
           } else {
             throw e
           }
         }
       } else if (startup === 'igw') {
-        await startIgw(config, {
-          title: 'Gateway',
-          body: dualPathPreferMqtt ? 'MQTT unreachable — using IGW' : 'Connected remotely',
-        })
-        if (current !== session) return
+        if (
+          !(await startIgw(
+            config,
+            {
+              title: 'Gateway',
+              body: dualPathPreferMqtt ? 'MQTT unreachable — using IGW' : 'Connected remotely',
+            },
+            attempt
+          ))
+        )
+          return
+        if (!requestIsCurrent()) return
         if (dualPathPreferMqtt) {
           startMqttRecoveryProbe()
         }
@@ -324,12 +471,12 @@ export function useConnection() {
         mqttConnected.value = false
         dataSource.value = 'mqtt'
         resetInverterState()
-        await invokeTransport('disconnect_inverter')
+        await invokeTransport('disconnect_inverter', undefined, attempt)
       }
 
-      if (current !== session) return
+      if (!requestIsCurrent()) return
       await featureConnection.connect(config)
-      if (current !== session) return
+      if (!requestIsCurrent()) return
 
       // Auto-reconnect on wake (network change, IP renewal after sleep)
       await listenForSession('window-focused', () => {
@@ -350,36 +497,40 @@ export function useConnection() {
 
       try {
         if (!inverterEnabled) return
-        const initial = await invoke<InverterState>('get_state')
-        if (current === session && inverterEnabled) processState(initial, true)
+        const initialAttempt = attempt
+        const initial = await invoke<TransportEvent<InverterState>>('get_state')
+        if (isCurrentTransport(initialAttempt) && acceptsNotification(initial))
+          processState(initial, true)
       } catch (e) {
         logger.error('Failed to get initial state:', e)
       }
     } catch (e) {
       logger.error('Failed to connect to MQTT:', e)
-      if (current === session) mqttConnected.value = false
+      if (requestIsCurrent()) mqttConnected.value = false
     }
   }
 
   let mqttReconnectTimer: ReturnType<typeof setTimeout> | null = null
 
   async function failoverToIgw() {
-    const current = session
-    if (!inverterEnabled) return
+    if (!transportIsOwned()) return
+    const attempt = beginTransportReplacement()
     clearMqttConnectWatchdog()
     try {
       const config = await getAppConfig()
-      if (current !== session || !inverterEnabled) return
+      if (!isCurrentTransport(attempt)) return
       if (!isIgwConfigured(config)) {
         scheduleMqttOnlyReconnect()
         return
       }
       // connect_gateway stops MQTT (exclusive).
-      await startIgw(config, { title: 'Gateway', body: 'MQTT lost — switched to IGW' })
-      if (current === session) startMqttRecoveryProbe()
+      if (
+        await startIgw(config, { title: 'Gateway', body: 'MQTT lost — switched to IGW' }, attempt)
+      )
+        startMqttRecoveryProbe()
     } catch (e) {
       logger.error('IGW failover failed:', e)
-      if (current === session) scheduleMqttOnlyReconnect()
+      if (isCurrentTransport(attempt)) scheduleMqttOnlyReconnect()
     }
   }
 
@@ -392,33 +543,67 @@ export function useConnection() {
 
   function startMqttRecoveryProbe() {
     stopMqttRecoveryProbe()
-    if (!dualPathPreferMqtt) return
+    if (!dualPathPreferMqtt || !transportIsOwned()) return
+    const token = notificationSession
     mqttRecoveryTimer = setInterval(() => {
+      if (token !== notificationSession || !transportIsOwned()) return
       void tryRecoverMqtt()
     }, MQTT_RECOVERY_PROBE_MS)
   }
 
   async function tryRecoverMqtt() {
     const current = session
-    if (!dualPathPreferMqtt || dataSource.value === 'mqtt') return
+    const generation = transportGeneration
+    if (!dualPathPreferMqtt || dataSource.value === 'mqtt' || recoveryProbe || !transportIsOwned())
+      return
+    const probe = {}
+    recoveryProbe = probe
+    const stillCurrent = () =>
+      current === session && generation === transportGeneration && transportIsOwned()
     try {
       const config = await getAppConfig()
-      if (current !== session || !inverterEnabled) return
-      if (!isMqttConfigured(config)) return
+      if (!stillCurrent() || !isMqttConfigured(config)) return
       const reachable = await probeMqttReachable(config)
-      if (!reachable || current !== session || !inverterEnabled) return
+      if (!reachable || !stillCurrent()) return
       logger.log('Cerbo MQTT reachable again — switching back (stops IGW)')
       stopMqttRecoveryProbe()
-      // connect_mqtt stops gateway (exclusive).
-      await startMqtt(config, { title: 'MQTT', body: 'Cerbo MQTT restored' })
-      if (current === session) startMqttConnectWatchdog()
+      // A failed reachability probe keeps the live IGW identity. Rotate it only
+      // when replacement is actually selected, before the connect invocation.
+      const attempt = beginTransportReplacement()
+      await recoverMqttOrReconnectIgw(config, attempt)
     } catch {
-      // still down / connect failed — stay on IGW, probe again next minute
+      // A failed configuration read / reachability probe keeps the current IGW.
+    } finally {
+      if (recoveryProbe === probe) recoveryProbe = null
+    }
+  }
+
+  async function recoverMqttOrReconnectIgw(config: AppConfig, attempt: TransportAttempt) {
+    try {
+      if (await startMqtt(config, { title: 'MQTT', body: 'Cerbo MQTT restored' }, attempt))
+        startMqttConnectWatchdog()
+    } catch (error) {
+      if (!isCurrentTransport(attempt)) return
+      logger.error('MQTT recovery connect failed:', error)
+      await reconnectIgwAfterFailedRecovery(config)
+    }
+  }
+
+  async function reconnectIgwAfterFailedRecovery(config: AppConfig) {
+    // The native connect may already have stopped IGW. Reconnect with a new
+    // identity; never revive the previous client's queued events.
+    const fallback = beginTransportReplacement()
+    try {
+      if (await startIgw(config, undefined, fallback)) startMqttRecoveryProbe()
+    } catch (error) {
+      if (!isCurrentTransport(fallback)) return
+      logger.error('IGW recovery fallback failed:', error)
+      scheduleMqttOnlyReconnect()
     }
   }
 
   function scheduleMqttOnlyReconnect(forceAttempt?: number) {
-    if (!inverterEnabled) return
+    if (!transportIsOwned()) return
     if (forceAttempt !== undefined) {
       mqttOnlyReconnectAttempt = forceAttempt
     }
@@ -428,23 +613,32 @@ export function useConnection() {
   }
 
   function reconnectAfterDelay(delay = mqttReconnectDelayMs(0)) {
-    if (!inverterEnabled) return
+    if (!transportIsOwned()) return
+    const token = notificationSession
     if (mqttReconnectTimer) clearTimeout(mqttReconnectTimer)
-    mqttReconnectTimer = setTimeout(() => {
+    const reconnectTimer = setTimeout(() => {
+      if (mqttReconnectTimer !== reconnectTimer) return
       mqttReconnectTimer = null
+      if (token !== notificationSession || !transportIsOwned()) return
       void connectMqtt()
     }, delay)
+    mqttReconnectTimer = reconnectTimer
   }
 
   function cleanup() {
     if (freshnessTimer) clearInterval(freshnessTimer)
     freshnessTimer = null
+    const ownedTransport = isCurrentTransportSession(notificationSession)
     session += 1
+    transportGeneration += 1
+    invalidateNotifications()
+    recoveryProbe = null
     inverterEnabled = false
     stopMqttRecoveryProbe()
     clearMqttConnectWatchdog()
     for (const unlisten of listeners) unlisten()
     listeners = []
+    if (ownedTransport) clearVictronBanners()
 
     if (mqttReconnectTimer) {
       clearTimeout(mqttReconnectTimer)

@@ -52,7 +52,14 @@
       >
         <span class="flex items-start justify-between gap-2">
           <span class="text-[10px] font-semibold text-main tracking-tight">{{ n.title }}</span>
-          <span class="text-[8px] text-muted whitespace-nowrap tabular">
+          <span
+            class="text-[8px] text-muted whitespace-nowrap tabular"
+            :title="
+              n.timestamp === null
+                ? undefined
+                : new Date(n.timestamp).toLocaleString(undefined, { timeZoneName: 'short' })
+            "
+          >
             {{ formatTime(n.timestamp) }}
           </span>
         </span>
@@ -78,7 +85,8 @@ const { t: $t } = useI18n()
 const showPanel = ref(false)
 const unreadCount = computed(() => unreadNotificationCount())
 
-function formatTime(ts: number): string {
+function formatTime(ts: number | null): string {
+  if (ts === null) return $t('notifications.timeUnavailable')
   const d = new Date(ts)
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
 }
