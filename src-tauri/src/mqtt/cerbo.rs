@@ -430,7 +430,7 @@ impl MqttClient {
         }
         // Mark presence so the EV tile stays visible even when SOC/power are 0.
         cache.set_presence(kind);
-        // When cache.update returns false (TTL or 0-clobber), still re-apply the
+        // When cache.update returns false (TTL or negative SoC), still re-apply the
         // cached value to st so process_state_update's clone doesn't see None.
         match (kind, path) {
             ("ev", "Soc") => {
