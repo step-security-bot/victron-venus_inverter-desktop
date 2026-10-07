@@ -265,7 +265,7 @@
               </div>
             </div>
 
-            <FeaturePluginManager v-if="activeTab === featurePluginManagerTabId" />
+            <FeaturePluginManager v-if="showPluginManager" />
             <div v-if="activeTab === 'devices'" class="flex flex-col gap-4">
               <!-- Cerbo Water & EV (MQTT instance discovery) -->
               <div class="flex flex-col gap-3 p-3 classic-inset !rounded-lg !p-3">
@@ -663,6 +663,7 @@ const {
   clearMessage,
 } = useConfigForm()
 const activeTab = ref('mqtt')
+const showPluginManager = computed(() => activeTab.value === featurePluginManagerTabId)
 
 type DiscoveredInst = {
   instance: number
