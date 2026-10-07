@@ -26,6 +26,10 @@ describe('isEssModeCommandFresh', () => {
 })
 
 describe('selectedEssMode legacy mode_name aliases', () => {
+  it.each(['constructor', '__proto__'])('rejects inherited object property %s', (mode_name) => {
+    expect(selectedEssMode({ mode_name })).toBeUndefined()
+  })
+
   it('maps inverter-control Optimized mode_name strings', () => {
     expect(selectedEssMode({ mode_name: 'Optimized (BatteryLife)' })).toBe(
       'optimized_with_battery_life'

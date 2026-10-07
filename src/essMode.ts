@@ -63,7 +63,6 @@ export function selectedEssMode(mode?: EssModeState): EssModeId | undefined {
   if (mode.is_external) return 'external_control'
   const name = mode.mode_name?.trim().toLowerCase()
   if (!name) return undefined
-  const aliased = MODE_NAME_ALIASES[name]
-  if (aliased) return aliased
+  if (Object.prototype.hasOwnProperty.call(MODE_NAME_ALIASES, name)) return MODE_NAME_ALIASES[name]
   return ESS_MODES.find((item) => item.label.toLowerCase() === name)?.id
 }
